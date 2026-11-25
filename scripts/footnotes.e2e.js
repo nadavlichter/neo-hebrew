@@ -393,6 +393,66 @@ test('screenshot', async () => {
   await key('Return');
 });
 
+// Hebrew/RTL Phase 8: the same book as a Hebrew one (right to left, one English
+// paragraph the writer set left to right) through EPUB, Web Page, Markdown and PDF.
+test('a Hebrew book: EPUB, Web Page, Markdown and PDF follow the book\'s direction', async () => {
+  await js(`(() => {
+    const id = book.chapterOrder.filter((c) => isStory(c))[0];
+    document.querySelector('.chapter[data-id="' + id + '"] .chapter-body').innerHTML = '<p>הבוקר היה שקט והים נח.</p><p dir="ltr">An English line.</p><p>והספינות עמדו במקומן.</p>';
+    book.direction = 'rtl';
+    book.language = 'he';
+  })()`);
+  const epub = await exported('epub', 'he.epub');
+  const zip = await JSZip.loadAsync(fs.readFileSync(epub));
+  assert.match(await zip.file('OEBPS/content.opf').async('string'), /page-progression-direction="rtl"[\s\S]*<dc:language>he<\/dc:language>|<dc:language>he<\/dc:language>[\s\S]*page-progression-direction="rtl"/);
+  const pages = await Promise.all(Object.keys(zip.files).filter((f) => f.endsWith('.xhtml')).map((f) => zip.file(f).async('string')));
+  assert.ok(pages.every((x) => /<html [^>]*lang="he" dir="rtl">/.test(x)));
+  assert.ok(pages.some((x) => /<p dir="ltr">An English line\.<\/p>/.test(x)));
+  for (const page of pages) {
+    assert.ok(await js(`!new DOMParser().parseFromString(${JSON.stringify(page)}, 'application/xhtml+xml').querySelector('parsererror')`), 'well-formed XHTML');
+  }
+  const html = fs.readFileSync(await exported('html', 'he.html'), 'utf8');
+  assert.match(html, /<html lang="he" dir="rtl">/);
+  assert.match(html, /<p dir="ltr">An English line\.<\/p>/);
+  assert.ok(!/initial-letter: \d/.test(html), 'no drop cap in a Hebrew book the writer has not chosen one for');
+  const md = fs.readFileSync(await exported('md', 'he.md'), 'utf8');
+  assert.match(md, /<div dir="ltr">\n\nAn English line\.\n\n<\/div>/);
+  const pdf = await exported('pdf', 'he.pdf');
+  assert.ok(fs.statSync(pdf).size > 1000);
+  if (has('pdftotext')) assert.match(execFileSync('pdftotext', [pdf, '-']).toString(), /An English line/);
+  await js(`(() => { delete book.direction; delete book.language; })()`);
+});
+
+test('Word/EPUB/PDF round trip keeps native notes and their independent direction', async () => {
+  for (const dir of ['ltr', 'rtl']) {
+    const fnDir = dir === 'rtl' ? 'ltr' : 'rtl';
+    const note = fnDir === 'ltr' ? 'English ROUNDTRIPNOTE & "quoted"' : 'הערה ROUNDTRIPNOTE & "טקסט"';
+    await js(`(() => { const body=document.querySelector('.chapter-body');book.direction=${JSON.stringify(dir)};book.language=${JSON.stringify(dir === 'rtl' ? 'he' : 'en')};applyBookDir();body.innerHTML='<p>'+${JSON.stringify(dir === 'rtl' ? 'הבוקר היה שקט והים נח. '.repeat(20) : 'The quiet sea was still. '.repeat(20))}+'</p>';const p=body.firstElementChild;const f=footnoteMark(${JSON.stringify(note)});f.dataset.noteDir=${JSON.stringify(fnDir)};p.append(f);syncChapter(body,body.closest('.chapter').dataset.id);})()`);
+    const file = await exported('docx', 'roundtrip-'+dir+'.docx');
+    const imported = await js(`window.neo.importFiles([${JSON.stringify(file)}])`);
+    const bodies=imported.flatMap((b)=>b.chapters.flatMap((c)=>c.paras)).map((p)=>p.html||'').join('');
+    assert.ok(bodies.includes('ROUNDTRIPNOTE'));assert.ok(bodies.includes('data-note-dir="'+fnDir+'"'));
+    const actual=await js(`(()=>{const h=importedChapterHTML(${JSON.stringify(imported[0].chapters.find(c=>c.paras.some(p=>p.html)))},${JSON.stringify(dir)});const t=document.createElement('template');t.innerHTML=h;const f=t.content.querySelector('.fn');return {note:f.dataset.note,dir:f.dataset.noteDir};})()`);
+    assert.deepEqual(actual,{note,dir:fnDir});
+    const epub = await exported('epub', 'roundtrip-'+dir+'.epub');const zip=await JSZip.loadAsync(fs.readFileSync(epub));
+    const xhtml=(await Promise.all(Object.keys(zip.files).filter(p=>/\.xhtml$/.test(p)).map(p=>zip.file(p).async('string')))).join('');
+    assert.ok(xhtml.includes('ROUNDTRIPNOTE')&&xhtml.includes('direction:'+fnDir));
+    if(dir==='rtl')assert.match(await zip.file('OEBPS/content.opf').async('string'),/page-progression-direction="rtl"/);
+    const pdf=await exported('pdf','roundtrip-'+dir+'.pdf');
+    if(has('pdftotext'))assert.ok(execFileSync('pdftotext',[pdf,'-']).toString().includes('ROUNDTRIPNOTE'));
+  }
+});
+
+test('mixed writer labels are isolated on screen and escaped without changing saved Darlings', async () => {
+  const label='iPhone שלום <img src=x>';
+  await js(`(()=>{darlings=[{id:'audit',chapterLabel:${JSON.stringify(label)},text:'Words kept.',date:new Date().toISOString()}];renderDarlings();})()`);
+  const view=await js(`(()=>{const m=document.querySelector('.d-meta');return {text:m.firstElementChild.textContent,img:!!m.querySelector('img')};})()`);
+  assert.equal(view.img,false);assert.ok(view.text.includes('\u2068'+label+'\u2069'));
+  await js(`writeSidecar(book.id,'darlings',darlings)`);
+  const original=await js(`window.neo.readJSON(book.id,'darlings',[])`);
+  assert.equal(original[0].chapterLabel,label);assert.ok(!/[\u2066-\u2069]/.test(JSON.stringify(original)));
+});
+
 /* ---------- runner ---------- */
 
 async function main() {

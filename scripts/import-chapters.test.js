@@ -31,6 +31,7 @@ function room(opts = {}) {
     currentTab: 'manuscript',
     currentChapterId: opts.currentChapterId || null,
     log,
+    NeoBidi: require('../bidi'),
     t: (s, v) => String(s).replace(/\{(\w+)\}/g, (m, k) => (v && k in v ? v[k] : m)),
     toast: (msg) => log.push('toast ' + msg),
     escHtml: (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),

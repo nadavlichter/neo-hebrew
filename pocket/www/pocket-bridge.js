@@ -213,6 +213,17 @@
 
   window.neo = {
     paper: LETTER.includes(region) ? 'Letter' : 'A4',
+    // a language's strings for a book's own words (Chapter 1), whatever the interface speaks:
+    // the regional file over its base, from the same locales/ the interface reads
+    bookDict: async (code) => {
+      if (typeof code !== 'string' || !/^[a-z]{2,3}(-[A-Za-z]{2,4})?$/.test(code)) return null;
+      const get = async (c) => { try { const r = await fetch('locales/' + c + '.json'); return r.ok || r.status === 0 ? JSON.parse(await r.text()) : null; } catch { return null; } };
+      const base = code.split('-')[0];
+      const baseDict = await get(base);
+      const regional = code !== base ? await get(code) : null;
+      if (!baseDict && !regional) return null;
+      return { locale: regional ? code : base, dict: { ...(baseDict || {}), ...(regional || {}) } };
+    },
     /* ---------- library ---------- */
     readLibrary: async () => {
       if (!(await checkAccess())) return { authorName: '', penNames: [], firstRunDone: false, shelves: [{ id: 'shelf-1', name: 'Works in Progress', bookIds: [] }] };

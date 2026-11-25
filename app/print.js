@@ -44,10 +44,13 @@ function headingOwnCase(ch, esc) {
 const DROP_CAP_SIZE = '2.15 3';
 
 function buildPrintHtml(d, o) {
+  const rtl = d.dir === 'rtl';
   const trim = PRINT_TRIMS.find((x) => x.id === o.trim) || PRINT_TRIMS[0];
   const [W, H] = PRINT_DIMS[trim.id];
   const esc = (s) => escHtml(String(s || ''));
-  const cap = (library.fonts || {}).dropcap === 'none' ? '' : exportDropCapFont();
+  const cap = dropCapStyle(d.dir) === 'none' ? '' : exportDropCapFont(d);
+  const bodyFont = exportBodyFont(d);
+  const dirAttr = (p) => p.dir && p.dir !== (d.dir || 'ltr') ? ` dir="${p.dir}"` : '';
   const year = String(new Date().getFullYear());
   // paragraphs of prose, hyphenated in main.js (class "hy")
   // a footnote sits at the foot of its page (Paged.js's float: footnote).
@@ -60,7 +63,7 @@ function buildPrintHtml(d, o) {
   }
   const atFoot = (html, p) => {
     let n = fnStart.has(p) ? fnStart.get(p) : 0;
-    return html.replace(FN_HTML, (m, note) => { n += 1; return `<sup class="fncall">${n}</sup><span class="footnote"><span class="fnm">${n}</span>&#8194;${note}</span>`; });
+    return html.replace(FN_HTML, (m, note, dir) => { n += 1; return `<sup class="fncall">${n}</sup><span class="footnote"${dir ? fnDirAttrs(dir) : ''}><span class="fnm">${n}</span>&#8194;${note}</span>`; });
   };
   const prose = (paras, opening) => {
     let first = opening;
@@ -69,21 +72,21 @@ function buildPrintHtml(d, o) {
       if (p.sceneBreak) { afterBreak = true; return '<p class="brk">*&#8195;*&#8195;*</p>'; }
       if (p.blank) return '<p class="blank">&#160;</p>';
       const inner = atFoot(p.html.replace(/^<p[^>]*>|<\/p>$/g, ''), p);
-      if (p.litrpg) { afterBreak = false; return `<p class="${litrpgClass(paras, i)}">${inner || '&#8203;'}</p>`; }
-      if (p.poetry) { afterBreak = false; return `<p class="poetry"${p.align ? ` style="text-align:${p.align}"` : ''}>${inner}</p>`; }
+      if (p.litrpg) { afterBreak = false; return `<p class="${litrpgClass(paras, i)}"${dirAttr(p)}>${inner || '&#8203;'}</p>`; }
+      if (p.poetry) { afterBreak = false; return `<p class="poetry"${dirAttr(p)}${p.align ? ` style="text-align:${p.align}"` : ''}>${inner}</p>`; }
       const cls = ['hy'];
       if (first) cls.push('first');
       if (first && OPENING_DASH.test(p.text)) cls.push('dialogue');
       if (afterBreak || p.flush) cls.push('flush');
       first = false;
       afterBreak = false;
-      return `<p class="${cls.join(' ')}"${p.align ? ` style="text-align:${p.align}"` : ''}>${inner}</p>`;
+      return `<p class="${cls.join(' ')}"${dirAttr(p)}${p.align ? ` style="text-align:${p.align}"` : ''}>${inner}</p>`;
     }).join('\n');
   };
   const lines = (paras) => paras.map((p) => {
     if (p.sceneBreak) return '<p class="brk">*&#8195;*&#8195;*</p>';
     const cls = [isAttribution(p) ? 'attr' : '', p.poetry ? 'poetry' : ''].filter(Boolean).join(' ');
-    return `<p${cls ? ` class="${cls}"` : ''}>${atFoot(p.html.replace(/^<p[^>]*>|<\/p>$/g, ''), p)}</p>`;
+    return `<p${cls ? ` class="${cls}"` : ''}${dirAttr(p)}>${atFoot(p.html.replace(/^<p[^>]*>|<\/p>$/g, ''), p)}</p>`;
   }).join('\n');
 
   let body = '';
@@ -92,10 +95,10 @@ function buildPrintHtml(d, o) {
   // its back: the copyright page, the writer's own or the standard one
   const own = d.sections.find((s) => s.kind === 'copyright');
   let copy = own ? lines(own.paras) : [
-    t('Copyright © {year} {name}', { year, name: d.author }),
-    t('All rights reserved.'),
-    t('No part of this book may be reproduced in any form or by any electronic or mechanical means, including information storage and retrieval systems, without written permission from the author, except for the use of brief quotations in a book review.'),
-    ...(o.fiction ? [t('This is a work of fiction. Names, characters, places, and incidents either are the products of the author’s imagination or are used fictitiously. Any resemblance to actual persons, living or dead, events, or locales is entirely coincidental.')] : [])
+    plain(tBook('Copyright © {year} {name}', { year, name: d.author })),
+    tBook('All rights reserved.'),
+    tBook('No part of this book may be reproduced in any form or by any electronic or mechanical means, including information storage and retrieval systems, without written permission from the author, except for the use of brief quotations in a book review.'),
+    ...(o.fiction ? [tBook('This is a work of fiction. Names, characters, places, and incidents either are the products of the author’s imagination or are used fictitiously. Any resemblance to actual persons, living or dead, events, or locales is entirely coincidental.')] : [])
   ].map((x) => `<p>${esc(x)}</p>`).join('\n');
   if (o.isbn && !/ISBN/i.test(copy)) copy += `\n<p>ISBN ${esc(o.isbn)}</p>`;
   body += `<section class="fm copyright"><div class="cp">${copy}</div></section>`;
@@ -109,7 +112,7 @@ function buildPrintHtml(d, o) {
     const firstStory = d.sections.find((x) => x.kind === 'chapter');
     const unnumbered = new Set();
     for (const x of d.sections) { if (x === firstStory) break; unnumbered.add(x.num); }
-    body += `<nav class="fm toc"><h2 class="toc-hd">${esc(t('Contents'))}</h2><ol>${d.toc.map((e) => `
+    body += `<nav class="fm toc"><h2 class="toc-hd">${esc(tBook('Contents'))}</h2><ol>${d.toc.map((e) => `
       <li class="lv${e.level} t-${e.type}${unnumbered.has(e.num) ? ' nonum' : ''}"><a href="#s${e.num}"><span class="toc-t">${esc(e.label)}</span></a></li>`).join('')}</ol></nav>`;
   }
   // the story, then the pages at the back: the note to the reader first
@@ -154,15 +157,15 @@ function buildPrintHtml(d, o) {
   // a note to the reader: a review, and where to find the writer
   const links = o.links || {};
   const reach = [
-    links.website && [t('Website'), links.website],
-    links.newsletter && [t('Newsletter'), links.newsletter],
-    links.email && [t('Email'), links.email],
+    links.website && [tBook('Website'), links.website],
+    links.newsletter && [tBook('Newsletter'), links.newsletter],
+    links.email && [tBook('Email'), links.email],
     ...String(links.social || '').split('\n').map((x) => x.trim()).filter(Boolean).map((x) => ['', x])
   ].filter(Boolean);
   if (o.review || reach.length) {
-    back.push(`<section class="backpage note"><header class="ch-head"><h2 class="ch-title ch-only">${esc(t('Thank You for Reading'))}</h2></header>
-      ${o.review ? String(o.reviewWords || t('If you enjoyed {title}, please consider leaving a review on Amazon or Goodreads. Even a line or two helps other readers find the book, and it means a great deal to me.', { title: d.title })).split(/\n+/).map((x) => `<p class="hy flush">${esc(x)}</p>`).join('') : ''}
-      ${reach.length ? `<p class="reach-hd">${esc(t('Stay in touch'))}</p>${reach.map(([k, v]) => `<p class="reach">${k ? `<span class="k">${esc(k)}</span> ` : ''}${esc(v)}</p>`).join('')}` : ''}
+    back.push(`<section class="backpage note"><header class="ch-head"><h2 class="ch-title ch-only">${esc(tBook('Thank You for Reading'))}</h2></header>
+      ${o.review ? String(o.reviewWords || plain(tBook('If you enjoyed {title}, please consider leaving a review on Amazon or Goodreads. Even a line or two helps other readers find the book, and it means a great deal to me.', { title: d.title }))).split(/\n+/).map((x) => `<p class="hy flush">${esc(x)}</p>`).join('') : ''}
+      ${reach.length ? `<p class="reach-hd">${esc(tBook('Stay in touch'))}</p>${reach.map(([k, v]) => `<p class="reach">${k ? `<span class="k">${esc(k)}</span> ` : ''}${esc(v)}</p>`).join('')}` : ''}
     </section>`);
   }
   // the writer's acknowledgments and about-the-author pages
@@ -171,44 +174,44 @@ function buildPrintHtml(d, o) {
   }
   // other books by this name
   if (o.alsoBy && o.alsoBy.length) {
-    back.push(`<section class="backpage also"><header class="ch-head"><h2 class="ch-title ch-only">${esc(t('Also by {author}', { author: d.author }))}</h2></header>${o.alsoBy.map((x) => `<p>${esc(x)}</p>`).join('')}</section>`);
+    back.push(`<section class="backpage also"><header class="ch-head"><h2 class="ch-title ch-only">${esc(plain(tBook('Also by {author}', { author: d.author })))}</h2></header>${o.alsoBy.map((x) => `<p>${esc(x)}</p>`).join('')}</section>`);
   }
   body += back.map((x, i) => (i ? x.replace('class="backpage', 'class="backpage run-on') : x)).join('\n');
 
   const sz = trim.size;
   return `<!DOCTYPE html>
-<html lang="${esc(d.language || writingLanguage())}"><head><meta charset="utf-8"><title>${esc(d.title)}</title>
+<html lang="${esc(d.language || writingLanguage())}"${rtl ? ' dir="rtl"' : ''}><head><meta charset="utf-8"><title>${esc(d.title)}</title>
 <style>
 ${o.fonts || ''}
 @page { size: ${W}in ${H}in; margin: 0.7in ${trim.outside}in 0.75in ${trim.outside}in; }
 @page :left {
   margin-left: ${trim.outside}in; margin-right: __NEO_GUTTER__;
-  @top-center { content: ${cssString(d.author)}; }
+  @top-center { content: ${cssString(rtl ? d.title : d.author)}; }
   @bottom-left { content: counter(page); }
 }
 @page :right {
   margin-left: __NEO_GUTTER__; margin-right: ${trim.outside}in;
-  @top-center { content: ${cssString(d.title)}; }
+  @top-center { content: ${cssString(rtl ? d.author : d.title)}; }
   @bottom-right { content: counter(page); }
 }
 /* a printed book's page numbers sit at the outside corners (left pages at
    the left, right pages at the right), where a thumb flipping through finds them (#392) */
-@page { @top-center { font-family: ${exportBodyFont()}; font-size: ${(sz * 0.7).toFixed(2)}pt; letter-spacing: 0.16em; text-transform: uppercase; color: #333; vertical-align: bottom; padding-bottom: 0.18in; }
-        @bottom-left { font-family: ${exportBodyFont()}; font-size: ${(sz * 0.82).toFixed(2)}pt; color: #333; vertical-align: top; padding-top: 0.2in; text-align: left; }
-        @bottom-right { font-family: ${exportBodyFont()}; font-size: ${(sz * 0.82).toFixed(2)}pt; color: #333; vertical-align: top; padding-top: 0.2in; text-align: right; } }
+@page { @top-center { font-family: ${bodyFont}; font-size: ${(sz * 0.7).toFixed(2)}pt; letter-spacing: ${rtl ? 'normal' : '0.16em'}; text-transform: uppercase; color: #333; vertical-align: bottom; padding-bottom: 0.18in; }
+        @bottom-left { font-family: ${bodyFont}; font-size: ${(sz * 0.82).toFixed(2)}pt; color: #333; vertical-align: top; padding-top: 0.2in; text-align: left; }
+        @bottom-right { font-family: ${bodyFont}; font-size: ${(sz * 0.82).toFixed(2)}pt; color: #333; vertical-align: top; padding-top: 0.2in; text-align: right; } }
 @page :blank { @top-center { content: none; } @bottom-left { content: none; } @bottom-right { content: none; } }
 @page front { @top-center { content: none; } @bottom-left { content: none; } @bottom-right { content: none; } }
 @page chapter:first { @top-center { content: none; } }
 @page back { @top-center { content: none; } }
 html, body { margin: 0; padding: 0; }
-body { font-family: ${exportBodyFont()}; font-size: ${sz}pt; line-height: 1.42; color: #000; font-kerning: normal; font-variant-ligatures: common-ligatures; }
+body { font-family: ${bodyFont}; font-size: ${sz}pt; line-height: 1.42; color: #000; font-kerning: normal; font-variant-ligatures: common-ligatures; }
 p { margin: 0; orphans: 2; widows: 2; }
-.fm { page: front; break-before: right; text-align: center; }
+.fm { page: front; break-before: ${rtl ? 'recto' : 'right'}; text-align: center; }
 .titlepage { padding-top: 1.6in; }
 .titlepage h1 { font-size: ${(sz * 2.3).toFixed(1)}pt; line-height: 1.15; font-weight: normal; margin: 0; }
 .titlepage .sub { font-style: italic; font-size: ${(sz * 1.15).toFixed(1)}pt; margin-top: 0.18in; }
 .titlepage .auth { margin-top: 1.3in; font-size: ${(sz * 0.95).toFixed(1)}pt; letter-spacing: 0.2em; text-transform: uppercase; }
-.copyright { break-before: left; text-align: left; height: ${(H - 0.7 - 0.75 - 0.05).toFixed(2)}in; position: relative; }
+.copyright { break-before: ${rtl ? 'verso' : 'left'}; text-align: left; height: ${(H - 0.7 - 0.75 - 0.05).toFixed(2)}in; position: relative; }
 .copyright .cp { position: absolute; left: 0; right: 0; bottom: 0; font-size: ${(sz * 0.78).toFixed(2)}pt; line-height: 1.5; }
 .copyright .cp p { margin: 0 0 0.75em; }
 .dedication, .epigraph { padding-top: 1.7in; font-style: italic; }
@@ -230,8 +233,8 @@ p { margin: 0; orphans: 2; widows: 2; }
 .part .pl { display: block; font-size: ${(sz * 1.05).toFixed(1)}pt; letter-spacing: 0.24em; text-transform: uppercase; }
 .part .pt { display: block; font-size: ${(sz * 1.9).toFixed(1)}pt; line-height: 1.2; margin-top: 0.2in; }
 .part p { font-style: italic; margin: 0 0.3in 0.6em; }
-.chapter { page: chapter; break-before: right; }
-.backpage { page: back; break-before: right; }
+.chapter { page: chapter; break-before: ${rtl ? 'recto' : 'right'}; }
+.backpage { page: back; break-before: ${rtl ? 'recto' : 'right'}; }
 .backpage.run-on { break-before: page; }
 .ch-head { padding-top: 1.35in; margin-bottom: 0.42in; text-align: center; break-after: avoid; }
 .ch-num { font-size: ${(sz * 0.95).toFixed(1)}pt; letter-spacing: 0.24em; text-transform: uppercase; margin: 0 0 0.16in; }
@@ -256,7 +259,25 @@ ${litrpgCss('p.litrpg', { size: '0.78em', side: '0.15in', pad: '0.12in', fill: '
 [data-footnote-marker] { list-style: none; }
 .fncall { font-size: 0.7em; vertical-align: super; line-height: 0; }
 @page { @footnote { border-top: 0.4pt solid #555; padding-top: 0.4em; margin-top: 0.8em; } }
-</style></head><body>
+${rtl ? `
+/* Right-bound books keep physical left/right page margins and outside numbers. */
+body { direction: rtl; }
+/* Paged.js's furniture grid names physical columns; RTL must not reverse them. */
+.pagedjs_pagebox, .pagedjs_page_content { direction: ltr; }
+/* Its column overflow detector also measures left-to-right; only the inner text is RTL. */
+.pagedjs_page_content > div, .pagedjs_margin-content, .pagedjs_footnote_content { direction: rtl; }
+/* Footnote overflow uses the same physical column detector. */
+.pagedjs_footnote_inner_content { direction: ltr; }
+.footnote { direction: rtl; }
+.copyright, .toc, p.poetry, .footnote { text-align: right; text-align: start; }
+.toc li.lv1 { padding-left: 0; padding-right: 1.2em; }
+.toc a::after { padding-left: 0; padding-right: 1em; direction: ltr; }
+.titlepage .auth, .toc-hd, .part .pl, .ch-num, .ch-title.ch-only { letter-spacing: normal; }
+p[dir="ltr"] { direction: ltr; }
+p[dir="rtl"] { direction: rtl; }
+p.poetry[dir="ltr"], .copyright p[dir="ltr"] { text-align: left; text-align: start; }
+${cap ? 'p.first:not(.dialogue)::first-letter { padding-right: 0; padding-left: 0.06em; }' : ''}
+` : ''}</style></head><body>
 ${body}
 </body></html>`;
 }
@@ -289,17 +310,17 @@ async function printPaperback() {
   const alsoText = typeof ap.alsoByText === 'string' ? ap.alsoByText
     : Array.isArray(ap.alsoBy) ? others.filter((x) => ap.alsoBy.includes(x.id)).map((x) => x.title).join('\n')
       : others.map((x) => x.title).join('\n');
-  const reviewDefault = t('If you enjoyed {title}, please consider leaving a review on Amazon or Goodreads. Even a line or two helps other readers find the book, and it means a great deal to me.', { title: book.title });
+  const reviewDefault = plain(tBook('If you enjoyed {title}, please consider leaving a review on Amazon or Goodreads. Even a line or two helps other readers find the book, and it means a great deal to me.', { title: book.title }));
   const reviewText = ap.reviewText ? ap.reviewText.split('{title}').join(book.title) : reviewDefault;
-  const field = (id, label, value, ph = '') => `<label>${label}<input id="${id}" type="text" spellcheck="false" value="${escHtml(value || '').replace(/"/g, '&quot;')}" placeholder="${escHtml(ph).replace(/"/g, '&quot;')}"/></label>`;
+  const field = (id, label, value, ph = '') => `<label>${label}<input id="${id}" type="text" dir="${id === 'pm-isbn' ? 'ltr' : 'auto'}" spellcheck="false" value="${escHtml(value || '').replace(/"/g, '&quot;')}" placeholder="${escHtml(ph).replace(/"/g, '&quot;')}"/></label>`;
   const bd = document.createElement('div');
   bd.className = 'modal-backdrop';
   bd.innerHTML = `
     <div class="modal print-modal" style="width:560px">
       <h2 style="font-size:17px">${t('Paperback for KDP')}</h2>
-      <p class="pm-hint">${t('A print-ready interior PDF and a cover template sized to its page count, for Amazon KDP.')}</p>
+      <p class="pm-hint">${t('A print-ready interior PDF and a cover template sized to its page count, for Amazon KDP.')}</p>${hebrewWriting() ? `<p class="pm-hint">${t('For Hebrew, upload both PDFs and choose right-to-left reading in KDP. Standard color, Expanded Distribution and RTL hardcovers are unavailable.')}</p>` : ''}
       <div class="pm-row pm-trims">${PRINT_TRIMS.map((x) => `
-        <button type="button" class="fr-choice${(bp.trim || '5.5x8.5') === x.id ? ' sel' : ''}" data-trim="${x.id}"><strong>${x.label}</strong><span>${x.mm}</span></button>`).join('')}
+        <button type="button" class="fr-choice${(bp.trim || '5.5x8.5') === x.id ? ' sel' : ''}" data-trim="${x.id}"><strong dir="ltr">${x.label}</strong><span dir="ltr">${x.mm}</span></button>`).join('')}
       </div>
       <div class="pm-row">
         <label>${t('Paper')}
@@ -323,8 +344,8 @@ async function printPaperback() {
         <label>${t('Social media, one per line')}<textarea id="pm-social" rows="2" spellcheck="false">${escHtml(ap.social || '')}</textarea></label>
       </div>
       <label class="pm-also">${t('Also by {name}, one title per line', { name: escHtml(author.name || displayAuthor()) })}<textarea id="pm-also" rows="4" spellcheck="false">${escHtml(alsoText)}</textarea></label>
-      <div style="text-align:right;margin-top:14px">
-        <button class="m-cancel btn-quiet" style="margin-right:10px">${t('Cancel')}</button>
+      <div style="text-align:end;margin-top:14px">
+        <button class="m-cancel btn-quiet" style="margin-inline-end:10px">${t('Cancel')}</button>
         <button class="m-ok btn-gold">${t('Make PDFs')}</button>
       </div>
     </div>`;
@@ -397,7 +418,7 @@ async function printPaperback() {
   try {
     const html = buildPrintHtml(d, { ...opts, fonts: await exportFontFaces(d) });
     const r = await window.neo.printPaperback({
-      html, trim: opts.trim, paper: opts.paper, language: d.language,
+      html, trim: opts.trim, paper: opts.paper, language: d.language, dir: d.dir,
       pagesGuess: Math.round(words / per) + d.sections.length * 1.5 + 8,
       title: d.title, author: d.author,
       defaultName: safeName(d.title) + ' - ' + t('paperback') + ' ' + opts.trim
@@ -439,7 +460,7 @@ function buildTxt(data) {
   const d = data || bookExportData();
   let out = `${d.title.toUpperCase()}\n`;
   if (d.subtitle) out += `${d.subtitle}\n`;
-  out += t('by {author}', { author: d.author }) + '\n\n\n';
+  out += plain(t('by {author}', { author: d.author })) + '\n\n\n';
   let fnN = 0;
   for (const ch of d.sections) {
     if (ch.heading) out += `${plainHeading(ch).toUpperCase()}\n\n`;
@@ -472,7 +493,7 @@ function buildMd(data) {
   const mdRuns = (runs) => markedRuns(runs, mdMarks, (t) => t.replace(/([\\*_`~])/g, '\\$1'));
   let out = `# ${mdMeta(d.title)}\n\n`;
   if (d.subtitle) out += `*${mdMeta(d.subtitle)}*\n\n`;
-  out += `**${t('by {author}', { author: mdMeta(d.author) })}**\n\n`;
+  out += `**${plain(t('by {author}', { author: mdMeta(d.author) }))}**\n\n`;
   let fnN = 0;
   for (const ch of d.sections) {
     if (ch.heading) out += `\n## ${mdMeta(plainHeading(ch))}\n\n`;
@@ -487,7 +508,12 @@ function buildMd(data) {
         return;
       }
       const runs = (p.runs || []).map((r) => (r.fn !== undefined ? (notes.push(r.fn), { text: '\uE001' + (++fnN) + '\uE002' }) : r));
-      out += p.sceneBreak ? '\n***\n\n' : (p.poetry ? '> ' : '') + mdRuns(runs).replace(/\uE001(\d+)\uE002/g, '[^$1]') + '\n\n';
+      if (p.sceneBreak) { out += '\n***\n\n'; return; }
+      const line = (p.poetry ? '> ' : '') + mdRuns(runs).replace(/\uE001(\d+)\uE002/g, '[^$1]');
+      // Markdown has no direction: a paragraph that differs from the book's
+      // (D2) goes in a div, which GitHub, Obsidian and Typora honour and
+      // NEO's own Markdown import reads back
+      out += p.dir ? `<div dir="${p.dir}">\n\n${line}\n\n</div>\n\n` : line + '\n\n';
     });
     notes.forEach((n, i) => { out += `[^${fnN - notes.length + i + 1}]: ${mdMeta(n)}\n`; });
     if (notes.length) out += '\n';
@@ -499,15 +525,33 @@ function buildMd(data) {
 // (the @font-face rules in styles.css, the body fonts on Linux) travels
 // inside the file, so the PDF matches the page on any machine; a font the
 // computer has goes by name, with the same fallbacks as the page.
-const exportBodyFont = () => (getComputedStyle(document.documentElement).getPropertyValue('--body-font').trim() || 'Georgia, serif').replace(/[<>{};]/g, '');
+// Given the book's export data, a book with no Hebrew in it gets the stack
+// without NEO's Hebrew companion faces, as its files always read.
+const exportBodyFont = (d) => exportStack('--body-font', d);
 // the drop cap too: its face is the page's, bundled or the computer's
-const exportDropCapFont = () => (getComputedStyle(document.documentElement).getPropertyValue('--dropcap-font').trim() || 'Georgia, serif').replace(/[<>{};]/g, '');
-const firstFamily = (stack) => stack.split(',')[0].trim().replace(/^["']|["']$/g, '');
-async function exportFontFaces(d) {
-  const family = firstFamily(exportBodyFont());
-  // the drop cap sets one letter, upright and regular
-  const cap = (library.fonts || {}).dropcap === 'none' ? '' : firstFamily(exportDropCapFont());
+const exportDropCapFont = (d) => exportStack('--dropcap-font', d);
+function exportStack(prop, d) {
+  const stack = (getComputedStyle(document.documentElement).getPropertyValue(prop).trim() || 'Georgia, serif').replace(/[<>{};]/g, '');
+  if (!d || exportHasHebrew(d)) return stack;
+  return stack.replace(/(["'])NEO Hebrew [^"']*\1\s*,\s*/g, '').replace(/\s*,\s*(["'])NEO Hebrew [^"']*\1\s*$/, '') || 'Georgia, serif';
+}
+// whether any of the book's words in an export are Hebrew (the faces NEO
+// ships for them travel only then)
+function exportHasHebrew(d) {
   const text = d.sections.map((ch) => ch.paras.map((p) => p.html).join('')).join('');
+  return /[\u0590-\u05ff\u20aa\u25cc\ufb1d-\ufb4f]/.test(htmlLetters([d.title, d.subtitle, d.author, text,
+    ...d.sections.flatMap((ch) => [ch.heading, ch.title, ch.partTitle, ch.subtitle, ch.byline]),
+    ...(d.toc || []).map((entry) => entry.label)].join(' ')));
+}
+const fontFamilies = (stack) => stack.split(',').map((s) => s.trim().replace(/^["']|["']$/g, ''));
+// Word keeps the writer's Latin font name; complex-script run fonts are separate.
+const firstFamily = (stack) => fontFamilies(stack).find((s) => !s.startsWith('NEO Hebrew '));
+async function exportFontFaces(d) {
+  const families = fontFamilies(exportBodyFont());
+  // the drop cap sets one letter, upright and regular
+  const caps = dropCapStyle(d.dir) === 'none' ? [] : fontFamilies(exportDropCapFont());
+  const text = d.sections.map((ch) => ch.paras.map((p) => p.html).join('')).join('');
+  const hebrew = exportHasHebrew(d);
   // (the title is always bold; a dedication, an epigraph, a part's lines
   // and a title's subtitle are set in italic)
   const italic = !!d.subtitle || /<i[\s>]/.test(text)
@@ -516,8 +560,10 @@ async function exportFontFaces(d) {
   // a book with LitRPG boxes carries their monospace face too
   const mono = d.sections.some((ch) => ch.paras.some((p) => p.litrpg)) ? LITRPG_FONT : '';
   return embedFontFaces((name, weight, style) => {
-    const forBody = name === family && !(style === 'italic' && !(parseInt(weight, 10) >= 600 ? boldItalic : italic));
-    const forCap = name === cap && style === 'normal' && parseInt(weight, 10) === 400;
+    if (name.startsWith('NEO Hebrew ') && !hebrew) return false;
+    const forBody = families.includes(name) && !(style === 'italic' && !(parseInt(weight, 10) >= 600 ? boldItalic : italic));
+    const weights = weight.split(/\s+/).map(Number);
+    const forCap = caps.includes(name) && style === 'normal' && weights[0] <= 400 && weights[weights.length - 1] >= 400;
     const forMono = !!mono && name === mono;
     return forBody || forCap || forMono;
   });
@@ -547,7 +593,9 @@ async function embedFontFaces(pick) {
       const weight = r.style.getPropertyValue('font-weight') || '400';
       if (!pick(name, weight, style)) continue;
       const src = r.style.getPropertyValue('src').match(/url\(["']?([^"')]+)["']?\)\s*(format\([^)]*\))?/);
-      if (!src) continue;
+      // a face of the computer's own (NEO Hebrew Mono is local Courier New):
+      // the print window is on this computer, so the rule travels as it is
+      if (!src) { if (/local\(/.test(r.style.getPropertyValue('src'))) css += r.cssText + '\n'; continue; }
       const fit = ['unicode-range', 'size-adjust', 'ascent-override', 'descent-override', 'line-gap-override']
         .map((k) => r.style.getPropertyValue(k) && ` ${k}: ${r.style.getPropertyValue(k)};`).filter(Boolean).join('');
       try {
@@ -566,6 +614,25 @@ const isAttribution = (p) => /^(?:[—–]|--?\s)/.test(p.text || '');
 // a section's heading level follows the contents: a part, the titles in
 // it, their chapters (a single book's chapters are all level 0)
 const headTag = (ch) => 'h' + Math.min(6, 2 + (ch.level || 0));
+
+// What a right-to-left book changes in the Web Page and the PDF, after the
+// rules above: sides that were written as left or right turn over (the
+// contents' numbers go to the left, the indent of a deeper entry to the
+// right), poetry and notes start where their own text starts, and headings
+// are not letter-spaced (Hebrew has no capitals to space out). The page
+// number stays centred, which is the same in both directions, and the PDF
+// has no header. The paperback (buildPrintHtml) is not set by this.
+function htmlRtlCss(dropCap) {
+  return `
+  /* right to left */
+  .chapter p.poetry, .copyright, .notes, .chapter .notes p, .page .notes p { text-align: start; }
+  .notes::before { left: auto; right: 0; }
+  .contents .toc-pg { text-align: left; }
+  .contents li.lv1 { margin-left: 0; margin-right: 1.6em; }
+  .contents li.lv2 { margin-left: 0; margin-right: 3.2em; }
+  .chapter .hd, .contents .hd, .titlepage .auth, .chapter p.byline, .part .pl, .opener .byline, .contents li.t-part, .page p.attr { letter-spacing: 0; }${dropCap ? `
+  .chapter p.first:not(.dialogue)::first-letter { padding-right: 0; padding-left: 4px; }` : ''}`;
+}
 
 function buildHtml(data, opts = {}) {
   const d = data || bookExportData();
@@ -601,7 +668,7 @@ function buildHtml(data, opts = {}) {
   const lines = (paras, attrs = true) => paras.map((p) => {
     if (p.sceneBreak) return '<p class="brk">***</p>';
     const cls = [attrs && isAttribution(p) ? 'attr' : '', p.poetry ? 'poetry' : ''].filter(Boolean).join(' ');
-    return `<p${cls ? ` class="${cls}"` : ''}${p.align ? ` style="text-align:${p.align}"` : ''}>${p.html.replace(/^<p[^>]*>|<\/p>$/g, '')}</p>`;
+    return `<p${cls ? ` class="${cls}"` : ''}${p.dir ? ` dir="${p.dir}"` : ''}${p.align ? ` style="text-align:${p.align}"` : ''}>${p.html.replace(/^<p[^>]*>|<\/p>$/g, '')}</p>`;
   }).join('\n');
   // In the PDF, page 1 is the story's first page (a prologue or chapter 1):
   // the pages before it aren't counted; after it every page is, though a
@@ -610,10 +677,10 @@ function buildHtml(data, opts = {}) {
   let counting = false;
   let fnN = 0;
   const sectionHtml = (sec) => {
-    const { paras, notes } = fnParas(sec.paras, fnN, (note, n) => `<sup class="fnref"><a href="#fn${n}" id="fnr${n}">${n}</a></sup>`);
+    const { paras, notes, noteDirs } = fnParas(sec.paras, fnN, (note, n) => `<sup class="fnref"><a href="#fn${n}" id="fnr${n}">${n}</a></sup>`);
     const html = sectionBody(notes.length ? { ...sec, paras } : sec);
     if (!notes.length) return html;
-    const list = `<aside class="notes">${notes.map((note, i) => `<p id="fn${fnN + i + 1}"><a href="#fnr${fnN + i + 1}">${fnN + i + 1}</a>&#8194;${note}</p>`).join('')}</aside>`;
+    const list = `<aside class="notes">${notes.map((note, i) => `<p id="fn${fnN + i + 1}"${noteDirs[i] ? fnDirAttrs(noteDirs[i]) : ''}><a href="#fnr${fnN + i + 1}">${fnN + i + 1}</a>&#8194;${note}</p>`).join('')}</aside>`;
     fnN += notes.length;
     const at = html.lastIndexOf('</section>');
     return at < 0 ? html + list : html.slice(0, at) + list + html.slice(at);
@@ -658,7 +725,7 @@ function buildHtml(data, opts = {}) {
   // book once to learn where everything landed.
   const contents = d.contents && d.toc && d.toc.length ? `
     <nav class="contents">
-      <h2 class="hd">${escHtml(t('Contents'))}</h2>
+      <h2 class="hd">${escHtml(tBook('Contents'))}</h2>
       <ol>${d.toc.filter((e) => d.contentsChapters || e.type !== 'chapter').map((e) => `
         <li class="lv${e.level} t-${e.type}"><a href="#s${e.num}"><span class="toc-t">${escHtml(e.label)}</span><span class="toc-pg" data-for="s${e.num}"></span></a></li>`).join('')}
       </ol>${firstStory ? `<a class="p1-ref" href="#s${firstStory.num}" data-p1="s${firstStory.num}" aria-hidden="true" tabindex="-1">.</a>` : ''}
@@ -671,11 +738,12 @@ function buildHtml(data, opts = {}) {
     body += sectionHtml(ch);
   }
   if (!placed) body += contents;
+  const rtl = d.dir === 'rtl';
   return `<!DOCTYPE html>
-<html lang="${escHtml(d.language || writingLanguage())}"><head><meta charset="utf-8"><title>${escHtml(d.title)}</title>
+<html lang="${escHtml(d.language || writingLanguage())}"${d.dir === 'rtl' ? ' dir="rtl"' : ''}><head><meta charset="utf-8"><title>${escHtml(d.title)}</title>
 <style>
   ${opts.fonts || ''}
-  body { font-family: ${exportBodyFont()}; color: #1c1c1c; max-width: 620px; margin: 40px auto; line-height: 1.7; font-size: 13pt; }
+  body { font-family: ${exportBodyFont(d)}; color: #1c1c1c; max-width: 620px; margin: 40px auto; line-height: 1.7; font-size: 13pt; }
   .coverpage { text-align: center; margin: 0 0 40px; page-break-after: always; }
   .coverpage img { display: block; margin: 0 auto; width: 100%; max-width: 620px; max-height: 95vh; object-fit: contain; }
   .titlepage { text-align: center; margin: 30vh 0 20vh; page-break-after: always; }
@@ -698,7 +766,7 @@ function buildHtml(data, opts = {}) {
      search, and screen readers still find "The" where a float leaves "T"
      and "he" (a gap much wider than 4px splits the word again). A browser
      that can't set one gets a raised initial. */
-  ${(library.fonts || {}).dropcap === 'none' ? '' : `.chapter p.first:not(.dialogue)::first-letter { -webkit-initial-letter: ${DROP_CAP_SIZE}; initial-letter: ${DROP_CAP_SIZE}; padding-right: 4px; font-family: ${exportDropCapFont()}; }
+  ${dropCapStyle(d.dir) === 'none' ? '' : `.chapter p.first:not(.dialogue)::first-letter { -webkit-initial-letter: ${DROP_CAP_SIZE}; initial-letter: ${DROP_CAP_SIZE}; padding-right: 4px; font-family: ${exportDropCapFont(d)}; }
   @supports not ((initial-letter: 2) or (-webkit-initial-letter: 2)) { .chapter p.first:not(.dialogue)::first-letter { font-size: 1.8em; line-height: 1; padding-right: 0; } }`}
   .chapter .brk, .brk { text-align: center; text-indent: 0 !important; letter-spacing: 8px; color: #888; margin: 2.5em 0; }
   .chapter p.poetry { text-indent: 0; margin: 0 2.5em; }
@@ -748,20 +816,20 @@ function buildHtml(data, opts = {}) {
   /* printed pages carry their number at the foot; the cover, the title
      page and the pages that aren't chapters don't, the way books do it
      (only the PDF uses these rules) */
-  @page { @bottom-center { content: counter(page); font-family: ${exportBodyFont()}; font-size: 9pt; color: #777; } }
+  @page { @bottom-center { content: counter(page); font-family: ${exportBodyFont(d)}; font-size: 9pt; color: #777; } }
   @page front { counter-increment: page 0; @bottom-center { content: none; } }
   @page quiet { @bottom-center { content: none; } }
   .coverpage, .titlepage, .page, .contents { page: front; }
   .page.counted { page: quiet; }
   /* (the link that tells the printer where page 1 is, unseen) */
-  .contents .p1-ref { position: absolute; color: transparent; font-size: 1px; text-decoration: none; }
+  .contents .p1-ref { position: absolute; color: transparent; font-size: 1px; text-decoration: none; }${rtl ? htmlRtlCss(dropCapStyle(d.dir) !== 'none') : ''}
 </style></head><body>
 ${opts.cover ? `<div class="coverpage"><img src="data:${opts.cover.mime};base64,${opts.cover.base64}" alt="${t('Cover')}"/></div>` : ''}
 <div class="titlepage"><h1>${escHtml(d.title)}</h1>
 ${d.subtitle ? `<p class="sub">${escHtml(d.subtitle)}</p>` : ''}
 <p class="auth">${escHtml(d.author)}</p></div>
 ${body}
-${opts.stamp ? `<p class="prov">${t('{n} words · exported from NEO on {date}', { n: total, date: stamp })}</p>` : ''}
+${opts.stamp ? `<p class="prov">${plain(t('{n} words · exported from NEO on {date}', { n: total, date: stamp }))}</p>` : ''}
 </body></html>`;
 }
 
@@ -781,24 +849,25 @@ const escXml = (s) => String(s)
 // Footnotes in the exports (FOOTNOTES): numbered through the whole book, as
 // on the page. A paragraph's html carries each marker as runHtml wrote it;
 // FN_HTML finds them, its first group the note (attribute-escaped).
-const FN_HTML = /<span class="fn" data-note="([^"]*)" contenteditable="false">\u200B<\/span>/g;
+const FN_HTML = /<span class="fn" data-note="([^"]*)"(?: data-note-dir="(ltr|rtl)")? contenteditable="false">\u200B<\/span>/g;
+const fnDirAttrs = (dir) => /^(ltr|rtl)$/.test(dir) ? ` dir="${dir}" style="direction:${dir};text-align:${dir === 'rtl' ? 'right' : 'left'}"` : '';
 // the notes in the sections before this one: where its numbers start
 const fnBefore = (d, ch) => d.sections.slice(0, Math.max(0, d.sections.indexOf(ch)))
   .reduce((n, sec) => n + sec.paras.reduce((m, p) => m + ((p.html || '').match(FN_HTML) || []).length, 0), 0);
 // a section's paragraphs with each marker swapped for what a format sets
 // there; mark(note, n) gets the note (attribute-escaped) and its number
 function fnParas(paras, start, mark) {
-  const notes = [];
+  const notes = [], noteDirs = [];
   const out = paras.map((p) => (p.html && p.html.includes('class="fn"')
-    ? { ...p, html: p.html.replace(FN_HTML, (m, note) => { notes.push(note); return mark(note, start + notes.length); }) }
+    ? { ...p, html: p.html.replace(FN_HTML, (m, note, dir) => { notes.push(note); noteDirs.push(dir || ''); return mark(note, start + notes.length); }) }
     : p));
-  return { paras: out, notes };
+  return { paras: out, notes, noteDirs };
 }
 
 // a run's text in the manuscript's own inline tags
 function runHtml(r, esc = escHtml) {
   if (r.br) return '<br>';
-  if (r.fn !== undefined) return `<span class="fn" data-note="${escAttr(r.fn)}" contenteditable="false">\u200B</span>`;
+  if (r.fn !== undefined) return `<span class="fn" data-note="${escAttr(r.fn)}"${/^(ltr|rtl)$/.test(r.fnDir) ? ` data-note-dir="${r.fnDir}"` : ''} contenteditable="false">\u200B</span>`;
   let t = esc(r.text);
   if (r.s) t = '<s>' + t + '</s>';
   if (r.u) t = '<u>' + t + '</u>';
@@ -856,6 +925,15 @@ function nonBreakingRuns(text) {
     i = j;
   }
   return runs;
+}
+
+// Zero-width bidi controls use the same screen-only layer as soft hyphens.
+// The glyphs identify direction without inserting display characters into text.
+const BIDI_MARKS = { '\u200e': '↱', '\u200f': '↰', '\u061c': '↰', '\u2066': '›', '\u2067': '‹', '\u2068': '◇', '\u2069': '·' };
+function bidiMarkOffsets(text) {
+  const out = [];
+  for (let i = 0; i < text.length; i++) if (BIDI_MARKS[text[i]]) out.push(i);
+  return out;
 }
 
 // Soft hyphens (U+00AD) show too while the marks are on: the places a long
@@ -966,13 +1044,20 @@ function drawSoftHyphenTicks() {
     const walk = document.createTreeWalker(body, NodeFilter.SHOW_TEXT);
     let node;
     while ((node = walk.nextNode())) {
-      if (!node.data.includes(SOFT_HYPHEN)) continue;
+      const bidi = bidiMarkOffsets(node.data);
+      if (!node.data.includes(SOFT_HYPHEN) && !bidi.length) continue;
       const parent = node.parentElement;
       if (!ems.has(parent)) ems.set(parent, parseFloat(getComputedStyle(parent).fontSize) || 17);
-      for (const i of softHyphenOffsets(node.data)) {
+      for (const i of [...softHyphenOffsets(node.data), ...bidi]) {
         const at = softHyphenTick(softHyphenRect(node, i), origin, ems.get(parent));
         if (!at) continue;
         const tick = document.createElement('span');
+        if (BIDI_MARKS[node.data[i]]) {
+          tick.className = 'bidi-tick';
+          tick.dataset.bidi = node.data.charCodeAt(i).toString(16);
+          tick.textContent = BIDI_MARKS[node.data[i]];
+          tick.style.fontSize = ems.get(parent) * 0.5 + 'px';
+        }
         tick.style.left = at.left + 'px';
         tick.style.top = at.top + 'px';
         tick.style.width = at.width + 'px';
@@ -1007,7 +1092,7 @@ function paraRuns(pHtml, flip) {
         }
         // a footnote: its words, no text of its own on the line
         if (child.classList && child.classList.contains('fn')) {
-          runs.push({ fn: child.dataset.note || '', text: '' });
+          runs.push({ fn: child.dataset.note || '', text: '', ...(/^(ltr|rtl)$/.test(child.dataset.noteDir) ? { fnDir: child.dataset.noteDir } : {}) });
           continue;
         }
         const tag = child.tagName;
@@ -1042,29 +1127,102 @@ function paraRuns(pHtml, flip) {
 
 // a Word export's footnotes, gathered as docxP meets them (buildDocxEntries)
 let docxNotes = null;
+// the book's direction while a Word export is built, and whether any
+// right-to-left letters went into it (styles.xml then carries the Cs sizes,
+// emphasis and language); a left-to-right book with none is written as before
+let docxDir = 'ltr';
+let docxRtlSeen = false;
+const docxHasRtl = (text) => [...String(text || '')].some((ch) => NeoBidi.charDir(ch) === 'rtl');
+// A formatting run cut where its letters change direction. Digits, spaces
+// and punctuation go with the letter before them (or, at the paragraph's
+// start, the first letter after), and a paragraph with no letters at all
+// is in its own direction. Only called where right-to-left is in play.
+function docxScriptRuns(runs, paraDir) {
+  const text = runs.map((r) => (r.text && !r.br && r.fn === undefined ? r.text : '')).join('');
+  let first = '';
+  for (const ch of text) { first = NeoBidi.charDir(ch); if (first) break; }
+  let last = first || paraDir;
+  const out = [];
+  for (const r of runs) {
+    if (r.br || r.fn !== undefined || !r.text) { out.push(r); continue; }
+    let cur = null;
+    for (const ch of r.text) {
+      const d = NeoBidi.charDir(ch) || last;
+      last = d;
+      if (cur && cur.dir === d) cur.text += ch;
+      else { cur = Object.assign({}, r, { text: ch, dir: d }); out.push(cur); }
+    }
+  }
+  return out;
+}
+// Word's paragraph alignment for a NEO text-align (D3) in a paragraph of
+// that direction. A left-to-right paragraph writes what it always did:
+// center and right (end, its logical name, is right too); justify was never
+// carried. In a right-to-left paragraph the start (the right side) is Word's
+// default there, so start, '' and a physical right write nothing; end and a
+// physical left are the left side. This follows Word's documented UI (Align
+// Left / Align Right in a bidi paragraph are the physical sides); confirm in
+// Word for Mac and Windows, LibreOffice and Google Docs (plan 8.1).
+function docxJc(align, paraDir) {
+  const v = String(align || '').trim().toLowerCase();
+  if (v === 'center') return 'center';
+  if (paraDir === 'rtl') return v === 'left' || v === 'end' ? 'left' : '';
+  return v === 'right' || v === 'end' ? 'right' : '';
+}
+// Word's complex-script font, for right-to-left runs: one every Mac and
+// Windows has, with Hebrew and Arabic in it. NEO's own Hebrew companions
+// ("NEO Hebrew …", HEBREW-FONTS.md) aren't installed, so a .docx can't
+// name them; the Latin font stays the page's (firstFamily)
+const DOCX_CS_FONT = 'Times New Roman';
+// w:lang's w:bidi wants a full tag; the book's language, given a region
+function docxBidiLang(lang) {
+  const code = String(lang || '').trim();
+  if (/^[a-z]{2,3}-[a-z]{2}$/i.test(code)) return code;
+  return { he: 'he-IL', iw: 'he-IL', ar: 'ar-SA', fa: 'fa-IR', ur: 'ur-PK', yi: 'yi-001' }[code.split(/[-_]/)[0].toLowerCase()] || 'he-IL';
+}
 function docxP(runs, opts = {}) {
+  // the paragraph's direction: its stored exception (opts.dir), else the book's
+  const pDir = opts.dir || docxDir;
   // the schema wants a paragraph's properties in this order
   const pPr = [];
   if (opts.style) pPr.push(`<w:pStyle w:val="${opts.style}"/>`);
   if (opts.keepNext) pPr.push('<w:keepNext/>');
   if (opts.pageBreak) pPr.push('<w:pageBreakBefore/>');
+  // bidi comes after the page-break and border group and before spacing,
+  // ind and jc (CT_PPr). An RTL book's Normal style is bidi, so only an
+  // exception is written either way
+  if (docxDir === 'rtl' && opts.dir === 'ltr') pPr.push('<w:bidi w:val="0"/>');
+  else if (docxDir !== 'rtl' && opts.dir === 'rtl') pPr.push('<w:bidi/>');
   if (opts.spaceBefore || opts.spaceAfter) {
     pPr.push(`<w:spacing${opts.spaceBefore ? ` w:before="${opts.spaceBefore}"` : ''}${opts.spaceAfter ? ` w:after="${opts.spaceAfter}"` : ''} w:line="${opts.line || 360}" w:lineRule="auto"/>`);
   }
-  if (opts.poetry) pPr.push('<w:ind w:left="720" w:right="720"/>');
-  else if (opts.indentLeft) pPr.push(`<w:ind w:left="${opts.indentLeft}"/>`);
+  // a right-to-left paragraph's indents are logical: w:start/w:end (the
+  // right and left sides there); a left-to-right one keeps w:left/w:right.
+  // Confirm in Word for Mac and Windows that poetry and the contents'
+  // indents come out on the right
+  const [L, R] = pDir === 'rtl' ? ['start', 'end'] : ['left', 'right'];
+  if (opts.poetry) pPr.push(`<w:ind w:${L}="720" w:${R}="720"/>`);
+  else if (opts.indentLeft) pPr.push(`<w:ind w:${L}="${opts.indentLeft}"/>`);
   else if (opts.indent) pPr.push('<w:ind w:firstLine="480"/>');
   if (opts.align) pPr.push(`<w:jc w:val="${opts.align}"/>`);
-  const rXml = runs.map((r) => {
+  // right to left in play (the book, or Hebrew letters here): runs are cut
+  // by script, and a right-to-left one says so (w:rtl), which also makes
+  // Word use its Cs bold, italic and size
+  const plain = runs.map((r) => r.text || '').join('');
+  const rtlHere = docxHasRtl(plain);
+  if (rtlHere) docxRtlSeen = true;
+  const bidi = docxDir === 'rtl' || rtlHere;
+  const rXml = (bidi ? docxScriptRuns(runs, pDir) : runs).map((r) => {
     if (r.br) return '<w:r><w:br/></w:r>';
     if (r.fn !== undefined) {
       if (!docxNotes) return '';
-      docxNotes.push(r.fn);
+      docxNotes.push(r.fnDir ? { text: r.fn, dir: r.fnDir } : r.fn);
       return `<w:r><w:rPr><w:rStyle w:val="FootnoteReference"/></w:rPr><w:footnoteReference w:id="${docxNotes.length}"/></w:r>`;
     }
     const it = opts.flip ? !r.i : r.i;
     const caps = r.caps !== undefined ? r.caps : opts.caps;
     const size = r.size || opts.size;
+    const rtl = r.dir === 'rtl';
     // italic and bold are character styles (Emphasis, Strong), so an editor
     // or typesetter can find and restyle them all at once
     const rStyle = r.b && it ? 'StrongEmphasis' : r.b ? 'Strong' : it ? 'Emphasis' : '';
@@ -1073,8 +1231,9 @@ function docxP(runs, opts = {}) {
       + (caps === true ? '<w:caps/>' : caps === false ? '<w:caps w:val="0"/>' : '')
       + (r.s ? '<w:strike/>' : '')
       + (opts.tracking ? `<w:spacing w:val="${opts.tracking}"/>` : '')
-      + (size ? `<w:sz w:val="${size}"/>` : '')
-      + (r.u ? '<w:u w:val="single"/>' : '');
+      + (size ? `<w:sz w:val="${size}"/>` + (rtl ? `<w:szCs w:val="${size}"/>` : '') : '')
+      + (r.u ? '<w:u w:val="single"/>' : '')
+      + (rtl ? '<w:rtl/>' : '');
     return `<w:r>${rPr ? '<w:rPr>' + rPr + '</w:rPr>' : ''}<w:t xml:space="preserve">${escXml(r.text)}</w:t></w:r>`;
   }).join('');
   return `<w:p><w:pPr>${pPr.join('')}</w:pPr>${rXml}</w:p>`;
@@ -1082,16 +1241,26 @@ function docxP(runs, opts = {}) {
 
 function buildDocxEntries(data) {
   docxNotes = [];
-  try { return docxEntriesOf(data); } finally { docxNotes = null; }
+  try { return docxEntriesOf(data); } finally { docxNotes = null; docxDir = 'ltr'; docxRtlSeen = false; }
 }
 // Word's footnotes part: the two separators Word expects, then the notes
 function docxFootnotesXml(notes) {
   const sep = (id, type, tag) => `<w:footnote w:type="${type}" w:id="${id}"><w:p><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr><w:r><w:${tag}/></w:r></w:p></w:footnote>`;
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">${sep(-1, 'separator', 'separator')}${sep(0, 'continuationSeparator', 'continuationSeparator')}${notes.map((n, i) => `<w:footnote w:id="${i + 1}"><w:p><w:pPr><w:pStyle w:val="FootnoteText"/></w:pPr><w:r><w:rPr><w:rStyle w:val="FootnoteReference"/></w:rPr><w:footnoteRef/></w:r><w:r><w:t xml:space="preserve"> ${escXml(n)}</w:t></w:r></w:p></w:footnote>`).join('')}</w:footnotes>`;
+<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">${sep(-1, 'separator', 'separator')}${sep(0, 'continuationSeparator', 'continuationSeparator')}${notes.map((n, i) => `<w:footnote w:id="${i + 1}">${docxNoteP(n)}</w:footnote>`).join('')}</w:footnotes>`;
+}
+// a note's paragraph: Word's mark, then the words. Where right to left is in
+// play the words go through docxP, so they're cut by script like the page's
+function docxNoteP(n) {
+  const ref = '<w:r><w:rPr><w:rStyle w:val="FootnoteReference"/></w:rPr><w:footnoteRef/></w:r>';
+  if (n && typeof n === 'object') return docxP([{ text: ' ' + n.text }], { style: 'FootnoteText', dir: n.dir }).replace('</w:pPr>', '</w:pPr>' + ref);
+  if (docxDir !== 'rtl' && !docxHasRtl(n)) return `<w:p><w:pPr><w:pStyle w:val="FootnoteText"/></w:pPr>${ref}<w:r><w:t xml:space="preserve"> ${escXml(n)}</w:t></w:r></w:p>`;
+  return docxP([{ text: ' ' + n }], { style: 'FootnoteText' }).replace('</w:pPr>', '</w:pPr>' + ref);
 }
 function docxEntriesOf(data) {
   const d = data || bookExportData();
+  docxDir = d.dir === 'rtl' ? 'rtl' : 'ltr';
+  docxRtlSeen = false;
   const body = [];
   // headings carry Word's own heading styles, so the navigation pane and a
   // table of contents inserted in Word both see the book's shape
@@ -1101,14 +1270,14 @@ function docxEntriesOf(data) {
     const lead = i === 0 ? first : {};
     if (p.sceneBreak) { body.push(docxP([{ text: '***' }], Object.assign({ align: 'center' }, lead))); return; }
     const attr = isAttribution(p);
-    body.push(docxP(paraRuns(p.html), Object.assign({ align: 'center', flip: italic && !attr, size: attr ? 20 : undefined, spaceBefore: attr ? 240 : 0 }, lead)));
+    body.push(docxP(paraRuns(p.html), Object.assign({ align: 'center', flip: italic && !attr, size: attr ? 20 : undefined, spaceBefore: attr ? 240 : 0, dir: p.dir }, lead)));
   });
   // title page
   body.push(docxP([{ text: d.title }], { style: 'Title' }));
   if (d.subtitle) body.push(docxP([{ text: d.subtitle }], { style: 'Subtitle' }));
   body.push(docxP([{ text: d.author }], { style: 'Author' }));
   const contents = () => {
-    body.push(docxP([{ text: t('Contents') }], { align: 'center', pageBreak: true, spaceBefore: 1200, size: 28, caps: true }));
+    body.push(docxP([{ text: tBook('Contents') }], { align: 'center', pageBreak: true, spaceBefore: 1200, size: 28, caps: true }));
     body.push(docxP([], {}));
     for (const e of d.toc.filter((x) => d.contentsChapters || x.type !== 'chapter')) {
       body.push(docxP([{ text: e.label }], { indentLeft: 480 * e.level, spaceBefore: e.type === 'part' ? 240 : 0, caps: e.type === 'part' }));
@@ -1119,7 +1288,7 @@ function docxEntriesOf(data) {
     if (!placed && !ch.front) { contents(); placed = true; }
     const kind = ch.kind || 'chapter';
     if (kind === 'copyright') {
-      ch.paras.forEach((p, i) => body.push(docxP(p.sceneBreak ? [] : paraRuns(p.html), { pageBreak: i === 0, spaceBefore: i === 0 ? 6000 : 0, spaceAfter: 120, size: 18 })));
+      ch.paras.forEach((p, i) => body.push(docxP(p.sceneBreak ? [] : paraRuns(p.html), { pageBreak: i === 0, spaceBefore: i === 0 ? 6000 : 0, spaceAfter: 120, size: 18, dir: p.dir })));
       return;
     }
     if (kind === 'dedication' || kind === 'epigraph') {
@@ -1148,39 +1317,49 @@ function docxEntriesOf(data) {
     }
     // the prose by paragraph style: Body Text (indented), Body Text No
     // Indent (a flush paragraph), Poetry, Scene Break; only a centered or
-    // right-set line adds its alignment on top
+    // right-set line adds its alignment on top (docxJc: in a right-to-left
+    // paragraph, a line set to its end)
     ch.paras.forEach((p, i) => {
+      const dir = p.dir || '';
       if (p.litrpg) {
         // one Word box: lines in a row share the LitRPG style's border and
         // shading, which Word draws as a single box; room above and below it
         const top = !(ch.paras[i - 1] && ch.paras[i - 1].litrpg);
         const end = !(ch.paras[i + 1] && ch.paras[i + 1].litrpg);
-        body.push(docxP(paraRuns(p.html), { style: 'LitRPG', keepNext: !end, spaceBefore: top ? 240 : 0, spaceAfter: end ? 240 : 0, line: 240 }));
+        body.push(docxP(paraRuns(p.html), { style: 'LitRPG', keepNext: !end, spaceBefore: top ? 240 : 0, spaceAfter: end ? 240 : 0, line: 240, dir }));
         return;
       }
-      if (p.blank) body.push(docxP([], { style: 'BodyText' }));
-      else if (p.sceneBreak) body.push(docxP([{ text: '***' }], { style: 'SceneBreak' }));
-      else if (p.poetry) body.push(docxP(paraRuns(p.html), { style: 'Poetry', align: p.align === 'center' || p.align === 'right' ? p.align : '' }));
-      else if (p.align === 'center' || p.align === 'right') body.push(docxP(paraRuns(p.html), { style: 'BodyTextNoIndent', align: p.align }));
-      else body.push(docxP(paraRuns(p.html), { style: p.flush ? 'BodyTextNoIndent' : 'BodyText' }));
+      const jc = docxJc(p.align, dir || docxDir);
+      if (p.blank) body.push(docxP([], { style: 'BodyText', dir }));
+      else if (p.sceneBreak) body.push(docxP([{ text: '***' }], { style: 'SceneBreak', dir }));
+      else if (p.poetry) body.push(docxP(paraRuns(p.html), { style: 'Poetry', align: jc, dir }));
+      else if (jc) body.push(docxP(paraRuns(p.html), { style: 'BodyTextNoIndent', align: jc, dir }));
+      else body.push(docxP(paraRuns(p.html), { style: p.flush ? 'BodyTextNoIndent' : 'BodyText', dir }));
     });
   });
   if (!placed) contents();
+  // an RTL book mirrors its section (page numbers, gutter: no gutter is set,
+  // so no w:rtlGutter); Hebrew letters anywhere bring the Cs sizes, emphasis,
+  // font and language into styles.xml. A left-to-right book with none is
+  // written exactly as before
+  const rtlBook = docxDir === 'rtl';
+  const cs = rtlBook || docxRtlSeen || docxNotes.some((n) => docxHasRtl(n && typeof n === 'object' ? n.text : n));
+  const Cs = (rPr) => (cs ? rPr.replace(/<w:(b|i|sz)( w:val="\d+")?\/>/g, (m, k, v) => m + `<w:${k}Cs${v || ''}/>`) : rPr);
   const documentXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${body.join('')}
-<w:sectPr>${(window.neo.paper || 'Letter') === 'A4' ? '<w:pgSz w:w="11906" w:h="16838"/>' : '<w:pgSz w:w="12240" w:h="15840"/>'}<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/></w:sectPr>
+<w:sectPr>${(window.neo.paper || 'Letter') === 'A4' ? '<w:pgSz w:w="11906" w:h="16838"/>' : '<w:pgSz w:w="12240" w:h="15840"/>'}<w:pgMar w:top="1440" w:right="1440" w:bottom="1440" w:left="1440"/>${rtlBook ? '<w:bidi/>' : ''}</w:sectPr>
 </w:body></w:document>`;
   // the page's own typeface (on Linux, the bundled face it shows)
   const font = escXml(firstFamily(exportBodyFont()) || 'Georgia');
-  const para = (id, name, pPr, next = 'BodyText', rPr = '') => `<w:style w:type="paragraph" w:styleId="${id}"><w:name w:val="${name}"/><w:basedOn w:val="Normal"/><w:next w:val="${next}"/><w:qFormat/>${pPr ? '<w:pPr>' + pPr + '</w:pPr>' : ''}${rPr ? '<w:rPr>' + rPr + '</w:rPr>' : ''}</w:style>`;
-  const chr = (id, name, rPr) => `<w:style w:type="character" w:styleId="${id}"><w:name w:val="${name}"/><w:qFormat/><w:rPr>${rPr}</w:rPr></w:style>`;
+  const para = (id, name, pPr, next = 'BodyText', rPr = '') => `<w:style w:type="paragraph" w:styleId="${id}"><w:name w:val="${name}"/><w:basedOn w:val="Normal"/><w:next w:val="${next}"/><w:qFormat/>${pPr ? '<w:pPr>' + pPr + '</w:pPr>' : ''}${rPr ? '<w:rPr>' + Cs(rPr) + '</w:rPr>' : ''}</w:style>`;
+  const chr = (id, name, rPr) => `<w:style w:type="character" w:styleId="${id}"><w:name w:val="${name}"/><w:qFormat/><w:rPr>${Cs(rPr)}</w:rPr></w:style>`;
   const headingStyle = (n) => `<w:style w:type="paragraph" w:styleId="Heading${n}"><w:name w:val="heading ${n}"/><w:basedOn w:val="Normal"/><w:next w:val="BodyText"/><w:uiPriority w:val="9"/><w:qFormat/>
-<w:pPr><w:keepNext/><w:pageBreakBefore/><w:spacing w:before="1200"/><w:jc w:val="center"/><w:outlineLvl w:val="${n - 1}"/></w:pPr><w:rPr><w:caps/><w:sz w:val="28"/></w:rPr></w:style>`;
+<w:pPr><w:keepNext/><w:pageBreakBefore/><w:spacing w:before="1200"/><w:jc w:val="center"/><w:outlineLvl w:val="${n - 1}"/></w:pPr><w:rPr>${Cs('<w:caps/><w:sz w:val="28"/>')}</w:rPr></w:style>`;
   const stylesXml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="${font}" w:hAnsi="${font}" w:cs="${font}"/><w:sz w:val="24"/></w:rPr></w:rPrDefault>
+<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="${font}" w:hAnsi="${font}" w:cs="${cs ? DOCX_CS_FONT : font}"/>${Cs('<w:sz w:val="24"/>')}${cs ? `<w:lang w:bidi="${docxBidiLang(d.language)}"/>` : ''}</w:rPr></w:rPrDefault>
 <w:pPrDefault><w:pPr><w:spacing w:line="360" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults>
-<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style>
+<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/>${rtlBook ? '<w:pPr><w:bidi/></w:pPr>' : ''}</w:style>
 ${para('BodyText', 'Body Text', '<w:ind w:firstLine="480"/>')}
 ${para('BodyTextNoIndent', 'Body Text No Indent', '', 'BodyText')}
 ${para('Poetry', 'Poetry', '<w:ind w:left="720" w:right="720"/>')}
@@ -1237,6 +1416,23 @@ async function exportCover(d) {
 }
 
 // what each kind of section is, in the EPUB's own words
+// A right-to-left book's stylesheet, after the left-to-right one. Older readers
+// (Kindle, iBooks) don't all know logical properties, so the physical side is
+// written first and `start` after it; a paragraph the writer set left to right
+// keeps its left.
+const EPUB_RTL_CSS = `
+html[dir=rtl] p.poetry, html[dir=rtl] .dedication p, html[dir=rtl] .epigraph p, html[dir=rtl] .part p, html[dir=rtl] .copyright p, html[dir=rtl] .notes p { text-align: right; text-align: start; }
+html[dir=rtl] p[dir=ltr].poetry, html[dir=rtl] .dedication p[dir=ltr], html[dir=rtl] .epigraph p[dir=ltr], html[dir=rtl] .part p[dir=ltr], html[dir=rtl] .copyright p[dir=ltr] { text-align: left; text-align: start; }
+html[dir=rtl] p.litrpg { text-align: right; text-align: start; }
+html[dir=rtl] h1, html[dir=rtl] p.byline, html[dir=rtl] .titlepage .auth, html[dir=rtl] p.brk { letter-spacing: 0; }
+html[dir=rtl] nav#toc ol { padding-left: 0; padding-right: 0; }
+html[dir=rtl] nav#toc ol ol { padding-left: 0; padding-right: 1.5em; }`;
+// the attributes an XHTML page of a right-to-left book carries on <html>
+const epubDirAttrs = (d) => {
+  if (d.dir !== 'rtl') return '';
+  const lang = escXml(d.language || NeoI18n.getLocale());
+  return ` xml:lang="${lang}" lang="${lang}" dir="rtl"`;
+};
 const EPUB_TYPES = {
   copyright: 'copyright-page', dedication: 'dedication', epigraph: 'epigraph', part: 'part',
   opener: 'volume', acknowledgments: 'acknowledgments', about: 'backmatter'
@@ -1251,7 +1447,7 @@ function chapterXhtml(ch, d) {
     if (r.br) return '<br/>';
     if (p.litrpg && r.text) r = { ...r, text: litrpgSpaces(r.text) };
     if (r.fn !== undefined) {
-      notes.push(r.fn);
+      notes.push(r.fnDir ? { text: r.fn, dir: r.fnDir } : r.fn);
       fnN += 1;
       return `<sup class="fnref"><a epub:type="noteref" href="#fn${fnN}" id="fnr${fnN}">${fnN}</a></sup>`;
     }
@@ -1267,7 +1463,7 @@ function chapterXhtml(ch, d) {
     if (p.sceneBreak) return '<p class="brk">* * *</p>';
     if (p.litrpg) return `<p class="${litrpgClass(ch.paras, i)}">${xhtmlRuns(p) || '&#8203;'}</p>`;
     const cls = [kind !== 'copyright' && isAttribution(p) ? 'attr' : '', p.poetry ? 'poetry' : '', p.align === 'center' || p.align === 'right' ? p.align : ''].filter(Boolean);
-    return `<p${cls.length ? ` class="${cls.join(' ')}"` : ''}>${xhtmlRuns(p)}</p>`;
+    return `<p${cls.length ? ` class="${cls.join(' ')}"` : ''}${p.dir ? ` dir="${p.dir}"` : ''}>${xhtmlRuns(p)}</p>`;
   }).join('\n');
   let inner;
   if (kind === 'copyright' || kind === 'dedication' || kind === 'epigraph') {
@@ -1299,7 +1495,7 @@ ${ch.subtitle ? `<p class="sub">${escXml(ch.subtitle)}</p>` : ''}${ch.byline ? `
       if (p.align === 'center' || p.align === 'right') classes.push(p.align);
       const cls = classes.length ? ` class="${classes.join(' ')}"` : '';
       if (!p.poetry) first = false;
-      return `<p${cls}>${xhtmlRuns(p)}</p>`;
+      return `<p${cls}${p.dir ? ` dir="${p.dir}"` : ''}>${xhtmlRuns(p)}</p>`;
     }).join('\n');
     inner = `<section epub:type="${EPUB_TYPES[kind] || ch.role || 'chapter'}">${ch.heading ? `<h1>${headingOwnCase(ch, escXml)}</h1>` : ''}${ch.byline ? `<p class="byline">${escXml(ch.byline)}</p>` : ''}
 ${paras}
@@ -1307,7 +1503,7 @@ ${paras}
   }
   if (notes.length) {
     const first = fnN - notes.length + 1;
-    const asides = notes.map((n, i) => `<aside epub:type="footnote" id="fn${first + i}" class="footnote"><p><a href="#fnr${first + i}">${first + i}</a>&#8194;${escXml(n)}</p></aside>`).join('\n');
+    const asides = notes.map((n, i) => `<aside epub:type="footnote" id="fn${first + i}" class="footnote"><p${n && typeof n === 'object' ? fnDirAttrs(n.dir) : ''}><a href="#fnr${first + i}">${first + i}</a>&#8194;${escXml(n && typeof n === 'object' ? n.text : n)}</p></aside>`).join('\n');
     const at = inner.lastIndexOf('</section>');
     inner = inner.slice(0, at) + `<div class="notes">\n${asides}\n</div>\n` + inner.slice(at);
   }
@@ -1315,7 +1511,7 @@ ${paras}
   const lang = escXml(d.language || NeoI18n.getLocale());
   return `<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="${lang}" lang="${lang}">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="${lang}" lang="${lang}"${d.dir === 'rtl' ? ' dir="rtl"' : ''}>
 <head><title>${escXml(ch.heading || ch.label || d.title)}</title><link rel="stylesheet" type="text/css" href="style.css"/></head>
 <body>${inner}</body></html>`;
 }
@@ -1381,7 +1577,7 @@ ${navList(n.children)}
 <item id="css" href="style.css" media-type="text/css"/>
 ${monoFonts.map((f, i) => `<item id="font${i + 1}" href="fonts/${f.file}" media-type="font/ttf"/>`).join('\n')}${monoFonts.length ? '\n' : ''}${chItems}
 </manifest>
-<spine toc="ncx">
+<spine toc="ncx"${d.dir === 'rtl' ? ' page-progression-direction="rtl"' : ''}>
 <itemref idref="cover" linear="no"/>
 <itemref idref="titlepage"/>
 ${front.length ? spineOf(front) + '\n' : ''}<itemref idref="nav"${entryCount(toc) <= 1 ? ' linear="no"' : ''}/>
@@ -1395,9 +1591,9 @@ ${spineOf(rest)}
 </package>` },
     { path: 'OEBPS/nav.xhtml', content: `<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops"${epubDirAttrs(d)}>
 <head><title>${escXml(t('Table of Contents'))}</title><link rel="stylesheet" type="text/css" href="style.css"/></head>
-<body><nav epub:type="toc" id="toc"><h1>${escXml(t('Contents'))}</h1>
+<body><nav epub:type="toc" id="toc"><h1>${escXml(tBook('Contents'))}</h1>
 <ol>
 <li><a href="title.xhtml">${escXml(t('Title Page'))}</a></li>
 ${navList(toc)}
@@ -1459,15 +1655,15 @@ nav#toc ol ol { padding-left: 1.5em; }
 .coverimg img { max-width: 100%; max-height: 100%; }
 p.litrpg { font-family: "${LITRPG_FONT}", Menlo, Consolas, "Courier New", monospace; font-size: 0.8em; line-height: 1.45; text-indent: 0; text-align: left; -webkit-hyphens: none; -epub-hyphens: none; hyphens: none; white-space: pre-wrap; margin: 0 0.8em; padding: 0 0.6em; background-color: rgba(128, 128, 128, 0.14); border-left: 1px solid rgba(128, 128, 128, 0.6); border-right: 1px solid rgba(128, 128, 128, 0.6); }
 p.litrpg.lt-top { margin-top: 1em; padding-top: 0.4em; border-top: 1px solid rgba(128, 128, 128, 0.6); }
-p.litrpg.lt-end { margin-bottom: 1em; padding-bottom: 0.4em; border-bottom: 1px solid rgba(128, 128, 128, 0.6); }` },
+p.litrpg.lt-end { margin-bottom: 1em; padding-bottom: 0.4em; border-bottom: 1px solid rgba(128, 128, 128, 0.6); }${d.dir === 'rtl' ? EPUB_RTL_CSS : ''}` },
     { path: 'OEBPS/cover.xhtml', content: `<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml">
+<html xmlns="http://www.w3.org/1999/xhtml"${epubDirAttrs(d)}>
 <head><title>${escXml(t('Cover'))}</title><link rel="stylesheet" type="text/css" href="style.css"/></head>
 <body><div class="coverimg"><img src="${coverName}" alt="${escXml(d.title)}"/></div></body></html>` },
     { path: 'OEBPS/title.xhtml', content: `<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml">
+<html xmlns="http://www.w3.org/1999/xhtml"${epubDirAttrs(d)}>
 <head><title>${escXml(d.title)}</title><link rel="stylesheet" type="text/css" href="style.css"/></head>
 <body><div class="titlepage"><h2>${escXml(d.title)}</h2>
 ${d.subtitle ? `<p class="sub">${escXml(d.subtitle)}</p>` : ''}
@@ -1503,6 +1699,7 @@ async function shelfBookData(shelf, opts = {}) {
   const author = (cover && cover.author) || shelfAuthorName(shelf);
   const titles = metas.filter((m) => !isPageMeta(m));
   const single = titles.length === 1;
+  const shelfRtl = titles.length > 0 && titles.every((m) => NeoBidi.bookDir(m) === 'rtl');
   const pageParas = async (m) => parasFromHtml(m.chapterOrder && m.chapterOrder[0]
     ? await window.neo.readChapter(m.id, m.chapterOrder[0]) : '');
   const sections = [];
@@ -1604,8 +1801,8 @@ async function shelfBookData(shelf, opts = {}) {
       let heading;
       if (c.kind === 'unnumbered') heading = chTitle || '';
       else {
-        if (role) heading = role === 'prologue' ? t('Prologue') : t('Epilogue');
-        else { n += 1; heading = t('Chapter {n}', { n }); }
+        if (role) heading = role === 'prologue' ? tBook('Prologue') : tBook('Epilogue');
+        else { n += 1; heading = tBook('Chapter {n}', { n }); }
         if (chTitle) heading = library.exportCustomChapterTitles ? chTitle : heading + ' ' + headingDash() + ' ' + chTitle;
       }
       const lv = underPart ? chLevel + 1 : chLevel;
@@ -1629,7 +1826,9 @@ async function shelfBookData(shelf, opts = {}) {
     title,
     subtitle: (cover && cover.subtitle) || '',
     author,
-    language: writingLanguage(),
+    // a shelf of right-to-left titles is a right-to-left book
+    language: shelfRtl ? ((titles[0] && titles[0].language) || 'he') : writingLanguage(),
+    dir: shelfRtl ? 'rtl' : 'ltr',
     coverSeed: cover ? cover.coverSeed : shelf.id + ':' + title,
     coverImage: (cover && cover.coverImage) || null,
     sections,
@@ -1656,6 +1855,21 @@ function shelfFormats() {
   ];
 }
 
+// A shelf's book (an anthology, a bound book) prints its words (Chapter 1,
+// Prologue, Part I, Contents) in its first title's language, as that title
+// does: the words are borrowed for the export, and put back after it (unless
+// a book opened meanwhile has words of its own by then).
+async function withShelfWords(shelf, run) {
+  let words = null;
+  for (const id of shelf.bookIds) {
+    const m = await window.neo.readBookMeta(id);
+    if (m && !isPageMeta(m)) { words = await bookWordsFor(m); break; }
+  }
+  const keep = bookWords;
+  bookWords = words;
+  try { return await run(); } finally { if (bookWords === words) bookWords = keep; }
+}
+
 async function exportShelfAnthology(shelf) {
   if (!shelf.bookIds.length) { toast(t('This shelf has no books on it yet')); return; }
   const title = await askInput(t('Anthology title'), t('Shown on the title page, cover, and metadata'), shelf.name);
@@ -1664,9 +1878,12 @@ async function exportShelfAnthology(shelf) {
   if (!format) return;
   toast(t('Collecting the shelf…'));
   try {
-    const data = await shelfBookData(shelf, { title: title || shelf.name });
-    if (!data.sections.length) { toast(t('No words found on this shelf yet')); return; }
-    const saved = await window.neo.exportSave(await shelfPayload(data, format));
+    const payload = await withShelfWords(shelf, async () => {
+      const data = await shelfBookData(shelf, { title: title || shelf.name });
+      return data.sections.length ? shelfPayload(data, format) : null;
+    });
+    if (!payload) { toast(t('No words found on this shelf yet')); return; }
+    const saved = await window.neo.exportSave(payload);
     if (saved) toast(t('Anthology of {n} works exported: {file}', { n: shelf.bookIds.length, file: saved.split('/').pop() }), 6000);
   } catch (err) {
     window.neo.logError('export anthology: ' + (err && err.stack || err));
@@ -1680,9 +1897,12 @@ async function exportBoundBook(shelf) {
   if (!format) return;
   toast(t('Collecting the shelf…'));
   try {
-    const data = await shelfBookData(shelf, { bound: true });
-    if (!data.sections.length) { toast(t('No words found on this shelf yet')); return; }
-    const saved = await window.neo.exportSave(await shelfPayload(data, format));
+    const payload = await withShelfWords(shelf, async () => {
+      const data = await shelfBookData(shelf, { bound: true });
+      return data.sections.length ? shelfPayload(data, format) : null;
+    });
+    if (!payload) { toast(t('No words found on this shelf yet')); return; }
+    const saved = await window.neo.exportSave(payload);
     if (saved) toast(t('Exported: {file}', { file: saved.split('/').pop() }));
   } catch (err) {
     window.neo.logError('export bound book: ' + (err && err.stack || err));
@@ -1762,11 +1982,14 @@ async function exportFromShelf(bookId, format) {
   if (!meta || !Array.isArray(meta.chapterOrder)) return;
   const html = {};
   for (const chId of meta.chapterOrder) html[chId] = await window.neo.readChapter(bookId, chId);
+  // the words its pages carry (Chapter 1, Contents) are in the book's language, as when it is open
+  const words = await bookWordsFor(meta);
   if (book) return; // a book was opened meanwhile
   const hadUuid = !!meta.uuid;
-  const keep = { chapterHTML, savedHTML };
+  const keep = { chapterHTML, savedHTML, bookWords };
   shelfExport = true;
   book = meta;
+  bookWords = words;
   chapterHTML = html;
   savedHTML = { ...html };
   try {
@@ -1777,6 +2000,7 @@ async function exportFromShelf(bookId, format) {
       chapterHTML = keep.chapterHTML;
       savedHTML = keep.savedHTML;
     }
+    if (bookWords === words) bookWords = keep.bookWords;
     shelfExport = false;
   }
   // an EPUB's identity is made once and kept, as when exported from inside
@@ -1871,10 +2095,10 @@ async function doEmailDraft() {
     if (!ok) return;
   }
   const total = bookWordCount();
-  const subject = t('NEO draft — {title} — {n} words — {date}', { title: shownTitle(book.title), n: total, date: fmtDate(new Date()) });
+  const subject = plain(t('NEO draft — {title} — {n} words — {date}', { title: shownTitle(book.title), n: total, date: fmtDate(new Date()) }));
   const hash = await manuscriptHash();
-  const body = t('Draft snapshot of “{title}” — {n} words.', { title: shownTitle(book.title), n: total }) + '\n'
-    + t('Sent from NEO on {date}.', { date: new Date().toLocaleString(NeoI18n.getLocale()) }) + '\n\n'
+  const body = plain(t('Draft snapshot of “{title}” — {n} words.', { title: shownTitle(book.title), n: total })) + '\n'
+    + plain(t('Sent from NEO on {date}.', { date: new Date().toLocaleString(NeoI18n.getLocale()) })) + '\n\n'
     + t('SHA-256 fingerprint of the manuscript text:') + `\n${hash}\n\n`
     + (library.emailMethod === 'gmail' || library.emailMethod === 'mailto'
       ? t('The PDF snapshot is in the Finder window NEO just opened — drag it into this email before sending.')
@@ -1909,8 +2133,8 @@ function updateDialogBox(res) {
       <h2 style="font-size:16px">${t('NEO {version} is available', { version: res.latestVersion })}</h2>
       <p class="up-text">${t('You have {version}.', { version: res.currentVersion })}</p>
       <div class="up-bar" hidden><div class="up-fill"></div></div>
-      <div style="text-align:right;margin-top:14px">
-        <button class="m-cancel btn-quiet" style="margin-right:10px">${t('Later')}</button>
+      <div style="text-align:end;margin-top:14px">
+        <button class="m-cancel btn-quiet" style="margin-inline-end:10px">${t('Later')}</button>
         <button class="m-ok btn-gold"></button>
       </div>
     </div>`;
@@ -1986,7 +2210,7 @@ function updateNotice(title, line) {
     <div class="modal" style="width:400px" role="dialog" aria-modal="true">
       <h2 style="font-size:16px"></h2>
       <p class="up-text" hidden></p>
-      <div style="text-align:right;margin-top:14px"><button class="m-ok btn-gold">${t('OK')}</button></div>
+      <div style="text-align:end;margin-top:14px"><button class="m-ok btn-gold">${t('OK')}</button></div>
     </div>`;
   bd.querySelector('h2').textContent = title;
   if (line) { bd.querySelector('.up-text').hidden = false; bd.querySelector('.up-text').textContent = line; }
@@ -2141,6 +2365,17 @@ window.neo.onMenu(async (msg) => {
   if (msg.type === 'reshelve') reshelveBook();
   if (msg.type === 'typewriter') toggleTypewriter();
   if (msg.type === 'nbspMarks') toggleNbspMarks();
+  if (msg.type === 'insert-bidi-mark' || msg.type === 'insert-maqaf') {
+    const a = document.activeElement;
+    const sel = window.getSelection();
+    const node = sel && sel.rangeCount ? sel.getRangeAt(0).startContainer : null;
+    const host = node && (node.nodeType === 1 ? node : node.parentElement);
+    if (a && a.isContentEditable && host && a.contains(host)) {
+      // A menu insertion is its own undo step, even immediately after typing.
+      if (sel.isCollapsed) keepTypingStyle(document, () => sel.collapse(sel.focusNode, sel.focusOffset));
+      document.execCommand('insertText', false, msg.type === 'insert-maqaf' ? '\u05BE' : msg.mark === 'rlm' ? '\u200F' : '\u200E');
+    }
+  }
   if (msg.type === 'pagedView') togglePaged();
   if (msg.type === 'pageWidth') setPageWidth(msg.value);
   if (msg.type === 'twoPageView') toggleTwoPage();
@@ -2161,6 +2396,8 @@ window.neo.onMenu(async (msg) => {
   if (msg.type === 'align' && !(book && isScript())) {
     applyAlign(msg.value);
   }
+  if (msg.type === 'paraDir' && !(book && isScript())) applyParaDir(msg.value);
+  if (msg.type === 'bookDir') setBookDirection(msg.value);
   if (msg.type === 'alignBook') alignBookProse(msg.value);
   if (msg.type === 'poetry' && !(book && isScript())) togglePoetry();
   if (msg.type === 'flush' && !(book && isScript())) toggleFlush();
@@ -2211,6 +2448,7 @@ window.neo.onMenu(async (msg) => {
   if (msg.type === 'dropCap') {
     library.fonts = library.fonts || {};
     library.fonts.dropcap = msg.value;
+    library.fonts.dropcapChosen = true; // a style the writer picked, in a right-to-left book too
     await writeLibrary(library);
     applyFonts();
   }

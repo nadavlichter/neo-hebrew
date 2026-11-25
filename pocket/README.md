@@ -100,3 +100,11 @@ Punch list, in rough order:
 
 Email and import stay on the desktop. Pocket is
 the writing chair, not the cockpit.
+
+## Hebrew and right-to-left books
+
+Pocket follows the device language: Hebrew mirrors the controls and ⋯ sheet. Chapters open by swiping inward from the right edge; notes open from the left. In an English interface those edges stay as before. The page itself follows its book, so an English book stays left to right under Hebrew controls and vice versa.
+
+New books in a Hebrew interface start in Hebrew and right to left. A Hebrew first letter in an empty left-to-right paragraph sets an RTL exception; an English opening such as `iPhone` keeps an RTL paragraph right-aligned. Existing paragraph exceptions synced from the desktop are preserved. Pocket remains simple NEO, without new direction/mark controls pending the shared D6 product decision.
+
+Run `node scripts/pocket-www.js` before checking the page. It copies the same direction helpers, locales and all six Hebrew font files without changing packages. `node_modules/.bin/electron scripts/pocket-rtl.e2e.js` runs the actual Pocket page/bridge with simulated Capacitor services, mobile input events and phone/tablet sizes. This does not test a hardware keyboard, Gboard, iOS selection handles or native WebView PDF rendering. Both native PDF plugins pass the export HTML to their WebView unchanged; RTL HTML, exceptions and embedded font data are checked at that hand-off, not claimed as native PDF proofs. A real iOS/Android pass is still required, including Hebrew screenplay mono availability.

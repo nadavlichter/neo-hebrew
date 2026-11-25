@@ -14,7 +14,7 @@ const context = vm.createContext({});
 vm.runInContext(app.slice(from, to), context);
 vm.runInContext(`this.api = { SP_HEAD_RE, SP_AFTER, SP_EMPTY, spLooksLikeCharacter, spLooksLikeTransition,
   spParseHeading, spGhost, spContd, spPaginate, spEighths, spPageLabel, spPageMark, spToFountain, spFromFountain, spFountainTitle,
-  spRunsFromFountain, spFromFdx, spToFdx };`, context);
+  spRunsFromFountain, spFromFdx, spToFdx, spForced, spContdWord, spLinesText };`, context);
 const sp = context.api;
 const L = (type, text) => ({ type, text });
 const plain = (x) => JSON.parse(JSON.stringify(x));
@@ -249,4 +249,84 @@ test('a bold, underlined title travels through Fountain and Final Draft and come
   assert.match(sp.spToFountain(lines, { title: 'A*B' }), /^Title: A\*B$/m);
   assert.match(sp.spToFountain(lines, { title: 'A*B', titleStyle: { i: true } }), /^Title: \*A\\\*B\*$/m);
   assert.equal(sp.spFountainTitle(sp.spToFountain(lines, { title: 'Plain' })).titleStyle, undefined);
+});
+
+// ---- Hebrew scripts (Phase 10.2, 10.3) ----
+test('Hebrew scene headings: פנים. חוץ. פנים/חוץ. פנים-חוץ., always with the period', () => {
+  for (const s of ['פנים. בית - יום', 'חוץ. חוף - לילה', 'פנים/חוץ. מכונית - ערב', 'פנים-חוץ. מרפסת - בוקר']) assert.ok(sp.SP_HEAD_RE.test(s), s);
+  for (const s of ['פנימה הוא נכנס.', 'חוצה את הכביש.', 'פנים', 'חוץ מזה, כלום.']) assert.ok(!sp.SP_HEAD_RE.test(s), s);
+  assert.deepEqual(plain(sp.spParseHeading('פנים. מטבח - לילה')), { prefix: 'פנים.', loc: 'מטבח', time: 'לילה' });
+  assert.deepEqual(plain(sp.spParseHeading('פנים/חוץ. מכונית')), { prefix: 'פנים/חוץ.', loc: 'מכונית', time: null });
+  // the times of day are suggested as they are in English
+  assert.equal(sp.spGhost([L('heading', 'פנים. מטבח - לי')], 0), 'לה');
+  assert.equal(sp.spGhost([L('heading', 'INT. KITCHEN - NI')], 0), 'GHT');
+});
+
+test('Hebrew transitions, and a (CONT\'D) in the script\'s words', () => {
+  for (const s of ['קאט ל:', 'מעבר ל:', 'פייד אאוט.', 'פייד אין:']) assert.ok(sp.spLooksLikeTransition(s), s);
+  assert.ok(!sp.spLooksLikeTransition('היא פונה ל:'));
+  assert.equal(sp.spContdWord('he'), '(המשך)');
+  assert.equal(sp.spContdWord('he-IL'), '(המשך)');
+  assert.equal(sp.spContdWord('iw'), '(המשך)');
+  assert.equal(sp.spContdWord('en'), "(CONT'D)");
+  assert.equal(sp.spContdWord(undefined), "(CONT'D)");
+  assert.equal(sp.spGhost([L('character', 'דנה (ק.')], 0), 'ב.)');
+});
+
+test('a Hebrew name is a character by the cast, not by capitals; English is unchanged', () => {
+  const he = { caseless: true, cast: ['דנה', 'יוסי כהן'] };
+  // no capitals test: Hebrew has none
+  assert.ok(!sp.spLooksLikeCharacter('דנה'));
+  assert.ok(sp.spLooksLikeCharacter('דנה', he));
+  assert.ok(sp.spLooksLikeCharacter('דנה (ק.ב.)', he));
+  assert.ok(sp.spLooksLikeCharacter('יוסי כהן', he));
+  for (const s of ['רינה', 'דנה הולכת הביתה.', 'דנה!', '']) assert.ok(!sp.spLooksLikeCharacter(s, he), s);
+  assert.ok(!sp.spLooksLikeCharacter('דנה', { caseless: true, cast: [] }));
+  // a Latin name in capitals still counts in a Hebrew script
+  assert.ok(sp.spLooksLikeCharacter('KIM', he));
+  // English, with or without a cast passed: as before
+  for (const s of ['KIM', 'VERNON (V.O.)', 'MRS. HANLON']) assert.ok(sp.spLooksLikeCharacter(s), s);
+  for (const s of ['Kim', 'BOOM!', 'Kim walks in.']) assert.ok(!sp.spLooksLikeCharacter(s), s);
+});
+
+test('Fountain\'s @ . > typed at the start of a line force it, and come off', () => {
+  assert.deepEqual(plain(sp.spForced('@דנה')), { type: 'character', text: 'דנה' });
+  assert.deepEqual(plain(sp.spForced('@ דנה (ק.ב.)')), { type: 'character', text: 'דנה (ק.ב.)' });
+  assert.deepEqual(plain(sp.spForced('.מטבח - לילה')), { type: 'heading', text: 'מטבח - לילה' });
+  assert.deepEqual(plain(sp.spForced('>חיתוך חד ל:')), { type: 'transition', text: 'חיתוך חד ל:' });
+  for (const s of ['...ואז', '. ', '@', '>מרכז<', 'דנה', '']) assert.equal(sp.spForced(s), null, s);
+});
+
+test('Fountain with Hebrew: headings, @ names (then the bare name), transitions; out forced', () => {
+  const src = ['פנים. מטבח - לילה', '', 'דנה נכנסת.', '', '@דנה', 'שלום.', '', 'יוסי', 'זה לא הוא.', '', 'דנה', 'כן. (המשך)', '', 'קאט ל:', '', 'חוץ. חוף - יום', '', '@דנה (המשך)', 'עוד.'].join('\n');
+  assert.deepEqual(plain(sp.spFromFountain(src)), [
+    L('heading', 'פנים. מטבח - לילה'), L('action', 'דנה נכנסת.'), L('character', 'דנה'), L('dialogue', 'שלום.'),
+    // יוסי was never named with @: action, as Fountain reads it
+    L('action', 'יוסי זה לא הוא.'),
+    L('character', 'דנה'), L('dialogue', 'כן. (המשך)'), L('transition', 'קאט ל:'), L('heading', 'חוץ. חוף - יום'),
+    L('character', 'דנה'), L('dialogue', 'עוד.')
+  ]);
+  const out = sp.spToFountain([L('heading', 'פנים. מטבח - לילה'), L('character', 'דנה'), L('dialogue', 'שלום.'), L('transition', 'קאט ל:'), L('action', 'פנים. זה לא כותרת')]);
+  assert.equal(out, ['.פנים. מטבח - לילה', '', '@דנה', 'שלום.', '', '>קאט ל:', '', '!פנים. זה לא כותרת', ''].join('\n'));
+  // and back: the same lines
+  assert.deepEqual(plain(sp.spFromFountain(out)).map((l) => l.type), ['heading', 'character', 'dialogue', 'transition', 'action']);
+});
+
+test('Fountain in: a Hebrew script is right to left and Hebrew; an English one gets no direction', () => {
+  const NeoBidi = require('../bidi.js');
+  const he = ['Title: הבית', '', 'פנים. מטבח - לילה', '', 'דנה נכנסת עם iPhone ביד.', '', '@דנה', 'שלום.'].join('\n');
+  assert.deepEqual(plain(NeoBidi.inferRtlBook({}, sp.spLinesText(sp.spFromFountain(he)))), { direction: 'rtl', language: 'he' });
+  assert.equal(sp.spLinesText([{ runs: [{ text: 'פנים. ' }, { text: 'בית' }] }, { text: 'x' }]), 'פנים. בית\nx');
+  const en = ['INT. KITCHEN - NIGHT', '', 'Dana says שלום and leaves.', '', 'DANA', 'Bye.'].join('\n');
+  assert.equal(NeoBidi.inferRtlBook({}, sp.spLinesText(sp.spFromFountain(en))), null);
+});
+
+test('Final Draft round trip preserves Hebrew text and emphasis without invented direction fields', () => {
+  const lines = [{ type: 'heading', runs: [{ text: 'פנים. הבית - יום' }] }, { type: 'action', runs: [{ text: 'היא אמרה ' }, { text: 'שלום', i: true }] }];
+  const xml = sp.spToFdx(lines, { title: 'הבית', author: 'דנה לוי' });
+  assert.ok(!/RightToLeft|Direction=|[\u200e\u200f\u2066-\u2069]/.test(xml));
+  const back = plain(sp.spFromFdx(xml));
+  assert.equal(back.title.title, 'הבית');
+  assert.equal(back.lines[1].runs[1].text, 'שלום');
+  assert.equal(back.lines[1].runs[1].i, true);
 });

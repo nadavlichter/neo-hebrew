@@ -432,7 +432,8 @@ function outlinePartLine(chId) {
   const name = document.createElement('div');
   name.className = 'ol-part-name';
   const title = partTitleOf(chId);
-  name.textContent = chapterName(chId) + (title ? ': ' + title : '');
+  if (title && needsIsolate(title)) name.replaceChildren(isolated(chapterName(chId)), ': ', isolated(title));
+  else name.textContent = chapterName(chId) + (title ? ': ' + title : '');
   line.append(num, name);
   line.addEventListener('contextmenu', (e) => { e.preventDefault(); chapterMenu(chId, e.clientX, e.clientY, line); });
   return line;
@@ -456,6 +457,7 @@ function outlineLine(kind, chId, secId, index, label, text) {
   if (kind === 'chapter' && chapterKind(chId) !== 'chapter') num.title = chapterName(chId);
   const txt = document.createElement('div');
   txt.className = 'ol-text';
+  txt.dir = 'auto';
   txt.contentEditable = 'true';
   txt.spellcheck = false;
   txt.textContent = text;
@@ -483,7 +485,7 @@ function outlineLine(kind, chId, secId, index, label, text) {
     const items = pastedOutline(e.clipboardData);
     if (items.length < 2) {
       e.preventDefault();
-      document.execCommand('insertText', false, (e.clipboardData.getData('text/plain') || '').replace(/\s+/g, ' '));
+      document.execCommand('insertText', false, (dropEmbeddings(e.clipboardData.getData('text/plain')) || '').replace(/\s+/g, ' '));
       return;
     }
     e.preventDefault();
@@ -555,7 +557,7 @@ function outlineLine(kind, chId, secId, index, label, text) {
     // turned into a chapter or a section comes back with ⌘Z. (The engine
     // answers a ⌘Z the moment this handler returns, so a moment later we know
     // whether it had anything to take back in this line.)
-    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === 'z') {
+    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && latinKey(e).toLowerCase() === 'z') {
       const top = undoStack[undoStack.length - 1];
       if (top && top.outlineFocus) {
         let engineUndid = false;

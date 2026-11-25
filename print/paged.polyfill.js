@@ -2300,7 +2300,8 @@
 				page.classList.add("pagedjs_first_page");
 			}
 
-			if (pgnum % 2 !== 1) {
+			// NEO: recto is physically left in a right-to-left book.
+			if ((pgnum % 2 !== 1) !== !!this.settings.neoRtl) {
 				page.classList.remove("pagedjs_left_page");
 				page.classList.add("pagedjs_right_page");
 			} else {
@@ -2887,6 +2888,8 @@
 		}
 
 		setup(renderTo) {
+			// NEO: read page progression once, from the book's root, not its text runs.
+			this.settings.neoRtl = getComputedStyle(document.documentElement).direction === "rtl";
 			this.pagesArea = document.createElement("div");
 			this.pagesArea.classList.add("pagedjs_pages");
 
@@ -3026,7 +3029,8 @@
 		async handleBreaks(node, force) {
 			let currentPage = this.total + 1;
 			let currentPosition = currentPage % 2 === 0 ? "left" : "right";
-			// TODO: Recto and Verso should reverse for rtl languages
+			// NEO: left/right are physical; recto/verso retain odd/even parity.
+			if (this.settings.neoRtl) currentPosition = currentPosition === "left" ? "right" : "left";
 			let currentSide = currentPage % 2 === 0 ? "verso" : "recto";
 			let previousBreakAfter;
 			let breakBefore;
@@ -3263,7 +3267,8 @@
 		async clonePage(originalPage) {
 			let lastPage = this.pages[this.pages.length - 1];
 
-			let page = new Page(this.pagesArea, this.pageTemplate, false, this.hooks);
+			// NEO: cloned pages must keep the same right-to-left progression.
+			let page = new Page(this.pagesArea, this.pageTemplate, false, this.hooks, this.settings);
 
 			this.pages.push(page);
 

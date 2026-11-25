@@ -15,7 +15,7 @@
     <header id="shelf-header">
       <h1>NEO</h1>
       <div class="shelf-header-right">
-        <span id="author-chip" data-i18n-title title="Click to change your author name" role="button" tabindex="0"></span>
+        <span id="author-chip" dir="auto" data-i18n-title title="Click to change your author name" role="button" tabindex="0"></span>
         <button id="import-btn" hidden><span aria-hidden="true">&#8681;</span> <span data-i18n>Import</span></button>
         <button id="add-shelf-btn" data-i18n-title title="Add a shelf" data-i18n-label="Add a shelf"><span aria-hidden="true">+</span> <span data-i18n>Shelf</span></button>
       </div>
@@ -30,10 +30,10 @@
         <h2 data-i18n>Welcome to NEO</h2>
         <p data-i18n>NEO knows you're writing books. A few quick questions and it will never ask anything again.</p>
         <label><span data-i18n>Your name</span> <span class="soft" data-i18n>(appears as the author on every document — leave blank for “Anonymous”)</span>
-          <input id="fr-name" type="text" autocomplete="off" spellcheck="false" />
+          <input id="fr-name" dir="auto" type="text" autocomplete="off" spellcheck="false" />
         </label>
         <label><span data-i18n>Pen name</span> <span class="soft" data-i18n>(optional — used on title pages if set)</span>
-          <input id="fr-pen" type="text" autocomplete="off" spellcheck="false" />
+          <input id="fr-pen" dir="auto" type="text" autocomplete="off" spellcheck="false" />
         </label>
         <div class="fr-style">
           <p data-i18n>Are you a pantser or a plotter?</p>
@@ -61,7 +61,7 @@
         <p style="margin-bottom:6px" data-i18n>Drop cap</p>
         <div id="fr-dropcaps" class="fr-fontrow"></div>
         <p id="fr-error" role="alert" hidden></p>
-        <div style="text-align:right;margin-top:20px">
+        <div style="text-align:end;margin-top:20px">
           <button id="fr-done" class="btn-gold" data-i18n>Start writing</button>
         </div>
       </div>
@@ -144,11 +144,11 @@
 
     <!-- Find & replace -->
     <div id="searchbar" hidden>
-      <input id="search-input" data-i18n-placeholder placeholder="Find" data-i18n-label="Find" spellcheck="false" />
+      <input id="search-input" dir="auto" data-i18n-placeholder placeholder="Find" data-i18n-label="Find" spellcheck="false" />
       <span id="search-count"></span>
       <button id="search-prev" data-i18n-title title="Previous (⇧Enter)" data-i18n-label="Previous (⇧Enter)">&#8593;</button>
       <button id="search-next" data-i18n-title title="Next (Enter)" data-i18n-label="Next (Enter)">&#8595;</button>
-      <input id="replace-input" data-i18n-placeholder placeholder="Replace with" data-i18n-label="Replace with" spellcheck="false" />
+      <input id="replace-input" dir="auto" data-i18n-placeholder placeholder="Replace with" data-i18n-label="Replace with" spellcheck="false" />
       <button id="replace-one" data-i18n>Replace</button>
       <button id="replace-all" data-i18n>All</button>
       <button id="search-close" data-i18n-title title="Close (Esc)" data-i18n-label="Close (Esc)">&#10005;</button>
@@ -160,6 +160,7 @@
   <div id="hint" hidden></div>
 
   <script src="jszip.min.js"></script>
+  <script src="bidi.js"></script>
   <script src="i18n.js"></script>
   <script src="pocket-bridge.js"></script>
   <script src="covers.js"></script>
@@ -202,9 +203,9 @@
       document.getElementById('side-pane').classList.remove('open');
       document.getElementById('nav-pane').classList.toggle('open');
     });
-    // Edge swipes stand in for the desktop's mouse-over: from the left edge
-    // for chapters, from the right edge for Notes & Comments. Swiping a pane
-    // back toward its edge, or touching the page, closes it.
+    // Edge swipes follow the interface: chapters at its start edge, notes at
+    // its end. A book keeps its own direction inside those panes. Swiping a
+    // pane back toward its edge, or touching the page, closes it.
     const nav = document.getElementById('nav-pane');
     const side = document.getElementById('side-pane');
     const EDGE = 28, PULL = 40;
@@ -218,10 +219,14 @@
       const t = e.touches[0];
       const dx = t.clientX - start.x, dy = Math.abs(t.clientY - start.y);
       if (Math.abs(dx) < PULL || dy > Math.abs(dx)) return;
-      if (start.fromLeft && dx > 0) nav.classList.add('open');
-      else if (start.fromRight && dx < 0) side.classList.add('open');
-      else if (dx < 0 && nav.classList.contains('open')) nav.classList.remove('open');
-      else if (dx > 0 && side.classList.contains('open')) side.classList.remove('open');
+      const rtl = document.documentElement.dir === 'rtl';
+      const fromStart = rtl ? start.fromRight : start.fromLeft;
+      const fromEnd = rtl ? start.fromLeft : start.fromRight;
+      const forward = rtl ? -dx : dx;
+      if (fromStart && forward > 0) { side.classList.remove('open'); nav.classList.add('open'); }
+      else if (fromEnd && forward < 0) { nav.classList.remove('open'); side.classList.add('open'); }
+      else if (forward < 0 && nav.classList.contains('open')) nav.classList.remove('open');
+      else if (forward > 0 && side.classList.contains('open')) side.classList.remove('open');
       start = null;
     }, { passive: true });
     // ⋯ opens a sheet of the desktop's Format and View menus. Every row sends
@@ -248,13 +253,13 @@
         (script ? '' : `<div class="pm-row pm-fonts"><span class="pm-label">${t('Typeface')}</span><span class="pm-seg pm-wrap">` +
           choices.map((f) => `<button class="${fonts.body === f ? 'on' : ''}" data-msg='${JSON.stringify({ type: 'bodyFont', value: f })}' style="font-family:${f}">${f}</button>`).join('') + '</span></div>') +
         seg(t('Text size'), [[-1, t('Smaller')], [0, t('Reset')], [1, t('Larger')]], null, (v) => ({ type: 'fontSize', value: v })) +
-        (script ? '' : seg(t('Drop cap'), [['literary', t('Literary')], ['fantasy', t('Fantasy')], ['scifi', t('Sci-Fi')], ['none', t('Off')]], fonts.dropcap || 'literary', (v) => ({ type: 'dropCap', value: v }))) +
+        (script ? '' : seg(t('Drop cap'), [['literary', t('Literary')], ['fantasy', t('Fantasy')], ['scifi', t('Sci-Fi')], ['none', t('Off')]], dropCapStyle(), (v) => ({ type: 'dropCap', value: v }))) +
         seg(t('Page'), [['night', t('Night')], ['paper', t('Paper')], ['light', t('Light')]], lib.pageTheme || 'night', (v) => ({ type: 'pageTheme', value: v })) +
         tick(t('Brighter Interface'), document.body.classList.contains('bright'), { type: 'uiBright' }) +
         tick(t('Typewriter scrolling'), st.typewriter, { type: 'typewriter' }) +
         // (the dictionary is the desktop's choice, which comes along in library.json)
         tick(t('Spellcheck'), typeof spellOn !== 'undefined' && spellOn, { type: 'spellcheck' }) +
-        (script ? '' : tick(t('Flush paragraph') + '  ⇧Enter', st.flush, { type: 'flush' })) +
+        (script ? '' : tick(t('Flush paragraph') + '  <bdi dir="ltr">⇧Enter</bdi>', st.flush, { type: 'flush' })) +
         (script || typeof featureOn !== 'function' || !featureOn('poetry') ? '' : tick(t('Poetry paragraph'), st.poetry, { type: 'poetry' })) +
         (window.Capacitor && window.Capacitor.getPlatform && window.Capacitor.getPlatform() === 'ios' ? '' :
           `<div class="pm-row"><span class="pm-label">${t('On-screen keyboard')}</span><span class="pm-seg"><button data-act="keyboard">${onOff(!(window.pocketSoftKeyboardOn && !window.pocketSoftKeyboardOn()))}</button></span></div>`) +

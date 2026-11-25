@@ -19,7 +19,7 @@ const root = path.join(__dirname, '..');
 const localRequire = createRequire(path.join(root, 'main.js'));
 const source = fs.readFileSync(path.join(root, 'main.js'), 'utf8');
 
-function menuBar(platform, more, { script = false, features = null } = {}) {
+function menuBar(platform, more, { script = false, features = null, view = null, locale = '' } = {}) {
   const listeners = new Map();
   let template = null;
   const electron = {
@@ -45,10 +45,13 @@ function menuBar(platform, more, { script = false, features = null } = {}) {
   context.library = library;
   vm.runInContext('LIBRARY_DIR = library; LIBRARY_FILE = require("path").join(library, "library.json");', context);
   try {
+    if (locale) vm.runInContext(`NeoI18n.setLocale(${JSON.stringify(locale)}, {}, {})`, context);
     vm.runInContext('buildMenu()', context);
+    if (view) listeners.get('view:state')({ sender: null }, { pageTheme: 'night', ...view });
     listeners.get('features:state')(null, features || Object.fromEntries(KEYS.map((k) => [k, more])));
     if (script) listeners.get('script:state')(null, { on: true, book: true, element: 'action' });
   } finally {
+    if (locale) vm.runInContext("NeoI18n.setLocale('en', {}, {})", context); // main.js's i18n module is shared by every menu built here
     fs.rmSync(library, { recursive: true, force: true });
   }
   return template;
@@ -69,7 +72,7 @@ const BEHIND = {
   exports: ['Plain Text (.txt)', 'Markdown (.md)', 'Web Page (.html)', 'Manuscript Format…', 'Import Chapters…'],
   covers: ['Cover Art…'],
   penNames: ['Reshelve a Book…'],
-  formatting: ['Other Font…', 'Align Paragraph', 'Align Book Prose'],
+  formatting: ['Other Font…', 'Align Paragraph', 'Align Book Prose', 'Paragraph Direction', 'Book Direction'],
   pages: ['Show Pages', 'Two Pages Side by Side', 'Page Width'],
   poetry: ['Poetry Paragraph'],
   focus: ['Focus Mode']
@@ -135,6 +138,40 @@ describe('the menu bar follows the features', () => {
         for (const top of menuBar('darwin', more, { script })) if (Array.isArray(top.submenu)) check(top.submenu, top.label || top.role);
       }
     }
+  });
+
+  // D6: the direction items are behind the switch, unless the open book or the interface runs right to left
+  test('Paragraph and Book Direction show in simple NEO for a right-to-left book or interface', () => {
+    // (a right-to-left interface starts every label with a mark)
+    const shown = (opts) => labels(menu(menuBar('darwin', false, opts), opts.locale ? '\u200FFormat' : 'Format')).map((l) => l.replace(/\u200F/g, ''));
+    for (const opts of [{}, { view: { bookDir: 'ltr' } }]) {
+      assert.ok(!shown(opts).includes('Paragraph Direction') && !shown(opts).includes('Book Direction'), JSON.stringify(opts));
+    }
+    for (const opts of [{ view: { bookDir: 'rtl' } }, { locale: 'he' }]) {
+      assert.ok(shown(opts).includes('Paragraph Direction') && shown(opts).includes('Book Direction'), JSON.stringify(opts));
+    }
+  });
+
+  test('marks and maqaf share D6 gating and stay absent from scripts', () => {
+    const marks = ['Insert Left-to-Right Mark', 'Insert Right-to-Left Mark', 'Insert Maqaf'];
+    const visible = (opts, more = false) => {
+      const fmt = menuBar('darwin', more, opts).find((i) => String(i.label || '').replace(/\u200f/g, '') === 'Format');
+      return fmt.submenu.filter((i) => i.visible !== false).map((i) => i.label && i.label.replace(/\u200f/g, ''));
+    };
+    assert.ok(marks.every((l) => !visible({}).includes(l)));
+    for (const opts of [{ view: { bookDir: 'rtl' } }, { locale: 'he' }]) assert.ok(marks.every((l) => visible(opts).includes(l)));
+    assert.ok(marks.every((l) => visible({}, true).includes(l)));
+    assert.ok(marks.every((l) => !visible({ script: true, view: { bookDir: 'rtl' } }, true).includes(l)));
+  });
+
+  test('the direction items carry ⌃⌘→ and ⌃⌘← on the Mac only, and tick from the window', () => {
+    const find = (template, label) => menu(template, 'Format').find((i) => i.label === label);
+    const mac = menuBar('darwin', true, { view: { paraDir: 'rtl', bookDir: 'ltr' } });
+    const para = find(mac, 'Paragraph Direction').submenu;
+    assert.deepEqual(Array.from(para, (i) => [i.label, i.accelerator, i.checked]), [['Right to Left', 'Ctrl+Cmd+Right', true], ['Left to Right', 'Ctrl+Cmd+Left', false]]);
+    assert.deepEqual(Array.from(find(mac, 'Book Direction').submenu, (i) => [i.label, i.checked]), [['Right to Left', false], ['Left to Right', true]]);
+    const win = find(menuBar('win32', true), 'Paragraph Direction').submenu;
+    assert.ok(win.every((i) => !('accelerator' in i)), 'a Shift key is no accelerator: the window reads it');
   });
 
   test('a script open in simple NEO keeps its own export and elements', () => {

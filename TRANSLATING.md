@@ -20,6 +20,7 @@ NEO currently speaks:
 | `uk` | Українська | complete, machine-assisted: native review welcome |
 | `hu` | Magyar | complete, reviewed by a native speaker |
 | `ko` | 한국어 | complete, machine-assisted: native review welcome |
+| `he` | עברית | complete, machine translation: native review needed; right to left |
 | `vi` | Tiếng Việt | complete |
 
 Spellchecking (Edit → Spellcheck Language) covers English, French, Spanish, German, Dutch, Polish, Brazilian Portuguese, Romanian, Russian, Ukrainian, Hungarian, Swedish and Danish. The engine is Hunspell itself, compiled to WebAssembly, so every dictionary loads in well under a second. Italian is left out because the only Hunspell dictionary on npm is GPL-3.0-only, which does not sit well in an MIT app. The Brazilian Portuguese interface starts with the Brazilian dictionary; the European Portuguese interface leaves the choice to the writer, since spellings differ.
@@ -93,14 +94,16 @@ So `fr-CA.json` is short: in Quebec, "courriel" instead of "e-mail", and no spac
   "{n} words": { "one": "{n} mot", "other": "{n} mots" }
   ```
 
-  The categories are those of your language in [Unicode's plural rules](https://www.unicode.org/cldr/charts/latest/supplemental/language_plural_rules.html) (`one`, `few`, `many`, `other`…). `other` is always required.
+  The categories are those of your language in [Unicode's plural rules](https://www.unicode.org/cldr/charts/latest/supplemental/language_plural_rules.html) (`one`, `few`, `many`, `other`…). `other` is always required. A `one` or `two` form may leave out `{n}` when the word itself says the number: Hebrew has `"{n} words": { "one": "מילה אחת", "two": "שתי מילים", "other": "{n} מילים" }`, and `node scripts/i18n.js check` accepts that. The other forms must keep `{n}`.
 - **Numbers** are formatted for the language automatically (`1,234` in English, `1 234` in French).
 - **`&amp;`** appears in a few help strings that are shown as HTML. Keep it as `&amp;` (or rephrase without an ampersand).
 - **Keyboard keys** such as `⌘`, `⇧` or `Ctrl` are added by NEO; translate the words around them.
 
 ## Typing in each language
 
-While writing, NEO sets the quotation marks of the language being written: the spellcheck language when one is chosen, otherwise NEO's own language. « » for French (with narrow no-break spaces), Spanish, Italian, European Portuguese, Russian and Ukrainian; „ “ for German; „ ” for Polish, Romanian and Hungarian; “ ” for English, Dutch, Brazilian Portuguese and Korean; ” ” for Swedish; » « for Danish. Swedish books set in »…» keep that style, and Danish books set in „…“ keep theirs. The apostrophe is always ’. French also gets a narrow no-break space before ; : ! ? (before : only in Canadian French). The table is `QUOTE_STYLES` in `app/`.
+While writing, NEO sets the quotation marks of the language being written: the spellcheck language when one is chosen, otherwise NEO's own language. « » for French (with narrow no-break spaces), Spanish, Italian, European Portuguese, Russian and Ukrainian; „ “ for German; „ ” for Polish, Romanian and Hungarian; “ ” for English, Dutch, Brazilian Portuguese and Korean; ” ” for Swedish; » « for Danish. Swedish books set in »…» keep that style, and Danish books set in „…“ keep theirs. Hebrew uses “ ” (single ‘ ’ inside), as in English. A Hebrew book that already holds another pair (low-opening „…”, or ”…”) keeps it. The apostrophe is always ’, except after a Hebrew letter. French also gets a narrow no-break space before ; : ! ? (before : only in Canadian French). The table is `QUOTE_STYLES` in `app/`.
+
+In Hebrew, a straight `"` between two Hebrew letters becomes a gershayim ״ (צה״ל, ד״ר) and a straight `'` after a Hebrew letter becomes a geresh ׳ (ג׳ירפה, פרופ׳), including Hebrew-letter numerals (י״ח). The mark is settled when the next letter arrives, and ⌘Z gives back the straight one. Pasted text is not changed. Format → Insert Maqaf types the maqaf ־ (U+05BE), which dashes and paste leave alone. These rules are off in scripts, and in a book written in another language they follow the Hebrew letters around the key (`hebrewWordMark` in `app/`).
 
 A book that has settled on other guillemets keeps them: in a German novel set in »…«, or Swiss writing in «…», type the first mark by hand and NEO carries on in that style (`bookQuotes` in `app/`).
 
@@ -110,7 +113,31 @@ Imports recognize chapter headings in all these interface languages (`CHAPTER_WO
 
 Most fonts NEO bundles (the body fonts on Linux, the drop caps and the cover titles, in `fonts/`) have Latin letters only. For Russian, each has a companion under the same font name in `styles.css` that supplies the Cyrillic letters, so Latin text looks exactly as before. A language with letters of its own needs the same check: every bundled font, companions included, must carry them. Korean has them too: Noto Serif KR for the serif faces, Noto Sans KR for the sans ones, each cut down to Hangul (the syllables, the jamo and CJK punctuation) as one variable file, so every weight comes from it. Hanja still come from the system's fonts.
 
+Hebrew body text uses Hebrew-only Frank Ruhl Libre (serif) and Noto Sans Hebrew (sans) companions. These are separate families before the original Latin stack: declaring a Hebrew-only face under an installed family name can hide the system face, and a separate family also permits synthesized Hebrew italic beside real Latin italics. Cover aliases use Karantina, Suez One, Frank Ruhl Libre and Secular One; fantasy drop caps use Bellefair. Every new font is OFL, with notices in `fonts/` and sources/checksums in [docs/HEBREW-FONTS.md](docs/HEBREW-FONTS.md). Hebrew remains slanted when italic, including a Hebrew book under a Korean interface. Screenplay mono and EPUB reader verification remain pending.
+
 Korean also changes how the interface sets its labels (the end of `styles.css`): words are kept whole when a line wraps, the wide letter-spacing of the small labels is narrowed, and Hangul is never slanted into a fake italic.
+
+## Right-to-left languages
+
+Hebrew is the only right-to-left language NEO supports, and the only one tested. Arabic, Persian and Yiddish are in `RTL_LANGS` in `bidi.js`, so a locale file for one of them already mirrors the interface, but the rest below is Hebrew's.
+
+Set `_meta.dir` to `"rtl"` in the locale file (or use a code in `RTL_LANGS`: `isRtlLang()` decides) and `<html dir>` follows. Already generic:
+
+- **The interface.** `styles.css` uses logical properties (`margin-inline-start`, `inset-inline-end`), so the chrome mirrors from `dir` alone. The arrow keys, popups and icons that point follow `uiRtl()`.
+- **`NeoBidi`** (`bidi.js`): the first strong letter, the counts, a book's direction and a paragraph's. Any letter in U+0590–08FF, FB1D–FDFF or FE70–FEFF counts as right to left.
+- **Placeholders.** `t()` wraps each value it fills in isolates (FSI…PDI) in a right-to-left interface, so a title or a number in Latin letters keeps its place in the sentence. Translate around the `{placeholder}` as usual. NEO strips the isolates (`plain()`) wherever the text goes into a file.
+- **Words printed in the book** (Chapter 1, Prologue, Part I, Contents, Copyright, the paperback's "Also by") come from the book's language through `tBook()`, not from the interface. A Hebrew book in an English interface prints "פרק 1".
+- **Imports and covers.** Chapter headings are found by `CHAPTER_WORDS` in `main.js` and small words on covers by `CONNECTORS` in `covers.js`; both take a new language by adding its words.
+
+What is Hebrew's and would need work for another language:
+
+- **Fonts.** Every bundled font needs letters of the new script (see above). Hebrew has companions for the body, drop caps and covers (screenplay and Courier text use the system's Courier New, as `NEO Hebrew Mono`); Arabic would need joining forms, kashida and a different line height.
+- **Quotes** (`QUOTE_STYLES`) and the typing aids (geresh, gershayim, maqaf, and the Hebrew numeral letters for chapters).
+- **Chapter numerals.** `CHAPTER_WORDS` reads Hebrew letter numerals (א׳, י״א); another script needs its own.
+- **Screenplay terms.** The scene heading words (פנים. חוץ.), times of day, transitions and extensions are lists in `app.js` (`SP_HEAD_HE`, `SP_TIMES`, `SP_TRANSITIONS`, `SP_EXTENSIONS`), and the screenplay's "(CONT'D)" in `SP_CONTD_WORDS`.
+- **Hyphenation.** A Hebrew book gets no generated hyphens. Another RTL language needs a decision and, for patterns, a file in `print/hyphen/patterns/`.
+- **Spellcheck.** There is no Hebrew dictionary. A language needs a Hunspell dictionary whose licence fits an MIT app.
+- **Word export.** Right-to-left runs use the complex-script properties (`w:rtl`, `w:bCs`, `w:iCs`, `w:lang w:bidi`); another script needs its own `w:lang w:bidi` code and complex-script font.
 
 ## For developers
 

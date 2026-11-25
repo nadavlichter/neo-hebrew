@@ -316,23 +316,28 @@ const NeoCovers = (() => {
     'het', 'een', 'van', 'op', 'met', // nl
     'w', 'z', 'na', 'do', 'ze', 'we', // pl
     'si', 'in', 'din', 'cu', 'pe', 'pentru', 'un', 'o', 'al', 'ale', 'la', 'de', 'sau', 'spre', 'sub', 'intre', 'fara', // ro ('ai' left out: "When AI Dreams")
+    // he — Hebrew small words
+    'של', 'על', 'עם', 'את', 'אל', 'מן', 'או', 'כי', 'גם',
     'и', 'а', 'но', 'или', 'в', 'во', 'на', 'о', 'об', 'с', 'со', 'к', 'по', 'из', 'за', 'от', 'до', 'для', 'без', 'под', 'над', 'про', 'у', 'мой', 'моя', 'моё', 'мои', 'его', 'её', 'их', // ru
     'і', 'й', 'та', 'але', 'або', 'чи', 'із', 'зі', 'від', 'мій', 'моє', 'мої', 'її', 'їх' // uk
   ].map(connKey));
 
   // fonts must be in before anything is measured. A face only loads for the
-  // letters it covers, so the sample text names a Latin and a Cyrillic one:
+  // letters it covers, so the sample includes Latin, Cyrillic and Hebrew:
   // a Russian title measured before its face arrived would not fill the line.
-  const SAMPLE = 'Aя';
+  const SAMPLE = 'Aяא';
   const ready = (typeof document !== 'undefined' && document.fonts)
     ? Promise.all(TEMPLATES.map((t) => document.fonts.load(`${t.weight} 20px "${t.family}"`, SAMPLE)))
-        .then(() => document.fonts.load('italic 900 20px "NEO Playfair"', SAMPLE))
+        .then(() => Promise.all([
+          document.fonts.load('italic 900 20px "NEO Playfair"', SAMPLE),
+          document.fonts.load('italic 900 20px "NEO Hebrew Serif"', SAMPLE)
+        ]))
         .catch(() => null)
     : Promise.resolve();
 
   const measureCtx = document.createElement('canvas').getContext('2d');
   function widthAt100(text, family, weight, italic) {
-    measureCtx.font = `${italic ? 'italic ' : ''}${weight} 100px "${family}", sans-serif`;
+    measureCtx.font = `${italic ? 'italic ' : ''}${weight} 100px ${italic ? '"NEO Hebrew Serif", ' : ''}"${family}", sans-serif`;
     return measureCtx.measureText(text).width;
   }
 
@@ -370,6 +375,8 @@ const NeoCovers = (() => {
     if (lines.length === 2 && lines[0].small) lines[0].small = false;
     return lines;
   }
+
+  const rtlText = (text) => typeof NeoBidi !== 'undefined' && NeoBidi.strongDir(text) === 'rtl';
 
   // Size every line to the tile width, then shrink the block if it's tall.
   function layout(title, t) {
@@ -448,7 +455,9 @@ const NeoCovers = (() => {
     const ink = inkFor(entry.canvas, reg.title);
     const authorInk = inkFor(entry.canvas, reg.author);
     const longAuthor = (meta.author || '').length > 16;
-    return { url: entry.url, template: template.id, lines: laid.lines, ink, authorInk, seed, longAuthor };
+    // a Hebrew or Arabic title sets right to left (the interface may be either)
+    const rtl = rtlText(laid.lines.map((ln) => ln.text).join(' '));
+    return { url: entry.url, template: template.id, lines: laid.lines, ink, authorInk, seed, longAuthor, rtl, authorRtl: rtlText(meta.author) };
   }
 
   // Apply a plan to a tile element: background, template class, ink class,
@@ -463,7 +472,9 @@ const NeoCovers = (() => {
     if (planned.longAuthor) el.classList.add('cv-au-long');
     el.style.background = `#1d1d1d url("${planned.url}") center / cover no-repeat`;
     const titleEl = el.querySelector('.b-title');
+    el.classList.toggle('cv-rtl', !!planned.rtl);
     if (titleEl) {
+      if (planned.rtl) titleEl.dir = 'rtl'; else titleEl.removeAttribute('dir');
       titleEl.innerHTML = '';
       for (const ln of planned.lines) {
         const span = document.createElement('span');
@@ -538,19 +549,23 @@ const NeoCovers = (() => {
       ctx.strokeStyle = ink; ctx.globalAlpha = 0.6; ctx.lineWidth = 1.5;
       ctx.strokeRect(5, 5, TILE_W - 10, TILE_H - 10); ctx.globalAlpha = 1;
     }
-    if (t.rule) { ctx.fillStyle = ink; ctx.fillRect(PAD, 10, 26, 4); }
+    if (t.rule) { ctx.fillStyle = ink; ctx.fillRect(planned.rtl ? TILE_W - PAD - 26 : PAD, 10, 26, 4); }
 
     // the title lines
     ctx.textBaseline = 'top';
-    ctx.textAlign = left ? 'left' : 'center';
-    const x = left ? PAD : TILE_W / 2;
+    const rtl = !!planned.rtl, auRtl = !!planned.authorRtl;
+    // canvas: a right-to-left run is laid out from its right edge, so a
+    // left-set style is set on the right instead (centered ones are unchanged)
+    ctx.direction = rtl ? 'rtl' : 'inherit';
+    ctx.textAlign = left ? (rtl ? 'right' : 'left') : 'center';
+    const x = left ? (rtl ? TILE_W - PAD : PAD) : TILE_W / 2;
     let y = top;
     for (const ln of planned.lines) {
-      ctx.font = `${ln.italic ? 'italic ' : ''}${ln.italic ? 900 : t.weight} ${ln.size}px "${ln.italic ? 'NEO Playfair' : t.family}"`;
+      ctx.font = `${ln.italic ? 'italic ' : ''}${ln.italic ? 900 : t.weight} ${ln.size}px ${ln.italic ? '"NEO Hebrew Serif", ' : ''}"${ln.italic ? 'NEO Playfair' : t.family}"`;
       ctx.fillStyle = ink;
       if (!t.band) { ctx.shadowColor = light ? 'rgba(0,0,0,0.45)' : 'rgba(255,255,255,0.3)'; ctx.shadowBlur = 6 * s; ctx.shadowOffsetY = 1 * s; }
       const spacing = ln.small ? (t.id === 'bebas' ? 3 : t.id === 'cinzel' ? 2.5 : 2) : (t.id === 'band' ? 0.8 : t.id === 'cinzel' ? 0.5 : t.id === 'stack' ? 0.3 : t.id === 'bebas' ? 0.5 : 0);
-      try { ctx.letterSpacing = spacing + 'px'; } catch { /* older engines */ }
+      try { ctx.letterSpacing = (rtl ? 0 : spacing) + 'px'; } catch { /* older engines */ }
       // CSS line-height centres the glyphs in the line box; nudge to match
       ctx.fillText(ln.text, x, y + (lineH(ln) - ln.size) / 2);
       y += lineH(ln);
@@ -564,7 +579,10 @@ const NeoCovers = (() => {
       const longAu = author.length > 16;
       let auSize = longAu ? 6.5 : AU;
       ctx.font = `600 ${auSize}px "NEO Josefin"`;
-      try { ctx.letterSpacing = (longAu ? 0.8 : 1.6) + 'px'; } catch { /* older engines */ }
+      ctx.direction = auRtl ? 'rtl' : 'inherit';
+      ctx.textAlign = left ? (auRtl ? 'right' : 'left') : 'center';
+      const ax = left ? (auRtl ? TILE_W - PAD : PAD) : TILE_W / 2;
+      try { ctx.letterSpacing = (auRtl ? 0 : longAu ? 0.8 : 1.6) + 'px'; } catch { /* older engines */ }
       let aw = ctx.measureText(author).width;
       if (aw > AVAIL_W) { // the shelf wraps a long name; here it steps down to fit
         auSize = Math.max(4.5, auSize * AVAIL_W / aw);
@@ -574,12 +592,12 @@ const NeoCovers = (() => {
       const ay = t.anchor === 'top' ? TILE_H - 9 - AU : y + AU_GAP;
       if (planned.authorInk.scrim && !t.band) {
         ctx.fillStyle = planned.authorInk.light ? 'rgba(0,0,0,0.5)' : 'rgba(255,255,255,0.6)';
-        const px = left ? PAD : TILE_W / 2 - aw / 2;
+        const px = left ? (auRtl ? TILE_W - PAD - aw : PAD) : TILE_W / 2 - aw / 2;
         ctx.fillRect(px - 6, ay - 3, aw + 12, AU + 6);
       }
       ctx.fillStyle = t.band ? ink : auInk;
       ctx.globalAlpha = t.band ? 0.9 : 0.9;
-      ctx.fillText(author, x, ay);
+      ctx.fillText(author, ax, ay);
       ctx.globalAlpha = 1;
     }
     ctx.restore();

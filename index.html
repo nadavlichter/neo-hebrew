@@ -16,7 +16,7 @@
     <header id="shelf-header">
       <h1>NEO</h1>
       <div class="shelf-header-right">
-        <span id="author-chip" data-i18n-title title="Click to change your author name" role="button" tabindex="0"></span>
+        <span id="author-chip" dir="auto" data-i18n-title title="Click to change your author name" role="button" tabindex="0"></span>
         <button id="import-btn" data-i18n-title title="Import .docx, .txt, or .md manuscripts"><span aria-hidden="true">&#8681;</span> <span data-i18n>Import</span></button>
         <button id="add-shelf-btn" data-i18n-title title="Add a shelf" data-i18n-label="Add a shelf"><span aria-hidden="true">+</span> <span data-i18n>Shelf</span></button>
       </div>
@@ -31,10 +31,10 @@
         <h2 data-i18n>Welcome to NEO</h2>
         <p data-i18n>NEO knows you're writing books. A few quick questions and it will never ask anything again.</p>
         <label><span data-i18n>Your name</span> <span class="soft" data-i18n>(appears as the author on every document — leave blank for “Anonymous”)</span>
-          <input id="fr-name" type="text" autocomplete="off" spellcheck="false" />
+          <input id="fr-name" dir="auto" type="text" autocomplete="off" spellcheck="false" />
         </label>
         <label><span data-i18n>Pen name</span> <span class="soft" data-i18n>(optional — used on title pages if set)</span>
-          <input id="fr-pen" type="text" autocomplete="off" spellcheck="false" />
+          <input id="fr-pen" dir="auto" type="text" autocomplete="off" spellcheck="false" />
         </label>
         <div class="fr-style">
           <p data-i18n>Are you a pantser or a plotter?</p>
@@ -62,7 +62,7 @@
         <p style="margin-bottom:6px" data-i18n>Drop cap</p>
         <div id="fr-dropcaps" class="fr-fontrow"></div>
         <p id="fr-error" role="alert" hidden></p>
-        <div style="text-align:right;margin-top:20px">
+        <div style="text-align:end;margin-top:20px">
           <button id="fr-done" class="btn-gold" data-i18n>Start writing</button>
         </div>
       </div>
@@ -97,9 +97,9 @@
     <main id="paper-scroll">
       <div id="paper">
         <div id="title-page" class="sheet">
-          <div id="tp-title" contenteditable="true" spellcheck="false" data-i18n-ph data-ph="Untitled" role="textbox" data-i18n-label="Title"></div>
-          <div id="tp-subtitle" contenteditable="true" spellcheck="false" data-i18n-ph data-ph="Subtitle (optional)" role="textbox" data-i18n-label="Subtitle (optional)"></div>
-          <div id="tp-author" contenteditable="true" spellcheck="false" data-i18n-ph data-ph="Author" role="textbox" data-i18n-label="Author"></div>
+          <div id="tp-title" dir="auto" contenteditable="true" spellcheck="false" data-i18n-ph data-ph="Untitled" role="textbox" data-i18n-label="Title"></div>
+          <div id="tp-subtitle" dir="auto" contenteditable="true" spellcheck="false" data-i18n-ph data-ph="Subtitle (optional)" role="textbox" data-i18n-label="Subtitle (optional)"></div>
+          <div id="tp-author" dir="auto" contenteditable="true" spellcheck="false" data-i18n-ph data-ph="Author" role="textbox" data-i18n-label="Author"></div>
         </div>
         <div id="chapters"></div>
       </div>
@@ -114,7 +114,7 @@
 
     <!-- Bottom bar: tabs + counters -->
     <footer id="bottombar">
-      <button id="back-to-shelf" data-i18n-title title="Back to your bookshelf" data-i18n-label="Back to your bookshelf"><span aria-hidden="true">&#8676;</span> <span data-i18n>Shelf</span></button>
+      <button id="back-to-shelf" data-i18n-title title="Back to your bookshelf" data-i18n-label="Back to your bookshelf"><span class="mirror-rtl" aria-hidden="true">&#8676;</span> <span data-i18n>Shelf</span></button>
       <div id="tabs" role="tablist">
         <div class="tab active" role="tab" tabindex="0" aria-selected="true" data-tab="manuscript" data-i18n>Manuscript</div>
         <div class="tab" role="tab" tabindex="0" aria-selected="false" data-tab="notes" data-i18n>Notes</div>
@@ -131,11 +131,11 @@
 
     <!-- Find & replace -->
     <div id="searchbar" hidden>
-      <input id="search-input" data-i18n-placeholder placeholder="Find" data-i18n-label="Find" spellcheck="false" />
+      <input id="search-input" dir="auto" data-i18n-placeholder placeholder="Find" data-i18n-label="Find" spellcheck="false" />
       <span id="search-count"></span>
       <button id="search-prev" data-i18n-title title="Previous (⇧Enter)" data-i18n-label="Previous (⇧Enter)">&#8593;</button>
       <button id="search-next" data-i18n-title title="Next (Enter)" data-i18n-label="Next (Enter)">&#8595;</button>
-      <input id="replace-input" data-i18n-placeholder placeholder="Replace with" data-i18n-label="Replace with" spellcheck="false" />
+      <input id="replace-input" dir="auto" data-i18n-placeholder placeholder="Replace with" data-i18n-label="Replace with" spellcheck="false" />
       <button id="replace-one" data-i18n>Replace</button>
       <button id="replace-all" data-i18n>All</button>
       <button id="search-close" data-i18n-title title="Close (Esc)" data-i18n-label="Close (Esc)">&#10005;</button>
@@ -146,6 +146,7 @@
   <!-- Toast — lives at body level so it shows over both views -->
   <div id="hint" role="status" aria-live="polite" hidden></div>
 
+  <script src="bidi.js"></script>
   <script src="i18n.js"></script>
   <script src="covers.js"></script>
   <script src="manuscript.js"></script>

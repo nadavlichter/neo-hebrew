@@ -9,12 +9,13 @@
   const l = (window.neo && window.neo.i18n) || {};
   NeoI18n.setLocale(l.locale || 'en', l.dict || {}, l.base || {});
 })();
-const { t, fmtNum, fmtDate } = NeoI18n;
+const { t, plain, fmtNum, fmtDate } = NeoI18n;
 
 // index.html marks its words with data-i18n (text), data-i18n-title,
 // data-i18n-placeholder and data-i18n-ph (the empty-field hints)
 function applyStaticI18n(root = document) {
   document.documentElement.lang = NeoI18n.getLocale();
+  document.documentElement.dir = NeoI18n.getDir();
   root.querySelectorAll('[data-i18n]').forEach((el) => { el.textContent = t(el.textContent.replace(/\s+/g, ' ').trim()); });
   root.querySelectorAll('[data-i18n-title]').forEach((el) => { if (el.title) el.title = t(el.title); });
   root.querySelectorAll('[data-i18n-placeholder]').forEach((el) => { el.placeholder = t(el.placeholder); });
@@ -81,6 +82,43 @@ function chapterRole(chId, meta = book) {
   return k === 'prologue' || k === 'epilogue' ? k : null;
 }
 // a chapter's number counts chapters only; a part's, parts only
+// The words a book carries into its pages and files (Chapter 1, Prologue, Part I) are in
+// the book's language, whatever the interface speaks (NeoI18n.headingLanguage). bookWords
+// is the open book's translator; with none, or on the shelf, t() answers as it always did.
+let bookWords = null; // { code, tr }
+function tBook(key, vars) { return bookWords ? bookWords.tr(key, vars) : t(key, vars); }
+const bookWordsCache = {};
+async function bookWordsFor(meta) {
+  const want = NeoI18n.headingLanguage(meta && meta.language, library && library.spellLanguage);
+  const ui = NeoI18n.getLocale();
+  if (!want || want.toLowerCase() === ui.toLowerCase()) return null;
+  if (!(want in bookWordsCache)) {
+    let hit = null;
+    try { hit = window.neo.bookDict ? await window.neo.bookDict(want) : null; } catch { hit = null; }
+    bookWordsCache[want] = hit;
+  }
+  const hit = bookWordsCache[want];
+  const english = (window.neo.i18n && window.neo.i18n.base) || {};
+  // no file for that language: a right-to-left interface still doesn't lend its words to a book
+  if (!hit) return NeoI18n.getDir() === 'rtl' ? { code: 'en', tr: NeoI18n.translator('en', {}, english) } : null;
+  if (hit.locale.toLowerCase() === ui.toLowerCase()) return null;
+  return { code: hit.locale, tr: NeoI18n.translator(hit.locale, hit.dict, english) };
+}
+// the book's language changed while it is open (a first Hebrew letter, Book Direction):
+// its words follow, in the headings on the page and the navigation
+function refreshBookWords() {
+  const meta = book;
+  if (!meta) return;
+  bookWordsFor(meta).then((w) => {
+    if (book !== meta || (w ? w.code : '') === (bookWords ? bookWords.code : '')) return;
+    bookWords = w;
+    for (const el of document.querySelectorAll('#chapters .chapter')) {
+      const num = el.querySelector(':scope > .chapter-head > .ch-num');
+      if (num && el.dataset.id) num.textContent = chapterName(el.dataset.id);
+    }
+    renderNav();
+  });
+}
 function kindCount(chId, kind, meta = book) {
   let n = 0;
   for (const c of meta.chapterOrder) {
@@ -95,7 +133,7 @@ function kindCount(chId, kind, meta = book) {
 const chapterNumber = (chId, meta = book) => kindCount(chId, 'chapter', meta);
 function chapterName(chId, meta = book) {
   const k = chapterKind(chId, meta);
-  if (k === 'chapter') return t('Chapter {n}', { n: chapterNumber(chId, meta) });
+  if (k === 'chapter') return tBook('Chapter {n}', { n: chapterNumber(chId, meta) });
   if (k === 'part') return partLabel(kindCount(chId, 'part', meta));
   // an unnumbered chapter is its title
   if (k === 'unnumbered') return ((meta.chapterTitles || {})[chId] || '').trim() || t('Untitled');
@@ -127,9 +165,9 @@ function chapterHeading(chId, meta = book, sep = ' ' + headingDash() + ' ') {
   return library.exportCustomChapterTitles ? title : chapterName(chId, meta) + sep + title;
 }
 function kindName(kind) {
-  if (kind === 'chapter') return t('Chapter');
-  if (kind === 'unnumbered') return t('Unnumbered Chapter');
-  if (kind === 'contents') return t('Contents');
+  if (kind === 'chapter') return tBook('Chapter');
+  if (kind === 'unnumbered') return tBook('Unnumbered Chapter');
+  if (kind === 'contents') return tBook('Contents');
   return pageKindName(kind);
 }
 // where there's only room for a number: a chapter's, a part's in roman
@@ -391,6 +429,8 @@ function scrollbarUnder(e) {
     const oy = getComputedStyle(el).overflowY;
     if (oy !== 'auto' && oy !== 'scroll') continue;
     const r = el.getBoundingClientRect();
+    // (a right-to-left scroller keeps its scrollbar on the left)
+    if (getComputedStyle(el).direction === 'rtl') return e.clientX >= r.left && e.clientX <= r.left + 24 ? el : null;
     return e.clientX >= r.right - 24 && e.clientX <= r.right ? el : null;
   }
   return null;
@@ -424,9 +464,9 @@ function askInput(title, placeholder, value = '') {
     bd.innerHTML = `
       <div class="modal" style="width:380px">
         <h2 style="font-size:16px">${title}</h2>
-        <input type="text" spellcheck="false" placeholder="${placeholder}" />
-        <div style="text-align:right;margin-top:14px">
-          <button class="m-cancel btn-quiet" style="margin-right:10px">${t('Cancel')}</button>
+        <input type="text" dir="auto" spellcheck="false" placeholder="${placeholder}" />
+        <div style="text-align:end;margin-top:14px">
+          <button class="m-cancel btn-quiet" style="margin-inline-end:10px">${t('Cancel')}</button>
           <button class="m-ok btn-gold">${t('OK')}</button>
         </div>
       </div>`;
@@ -463,7 +503,7 @@ function optionModal(title, message, options) {
         <h2 style="font-size:16px">${title}</h2>
         ${message ? `<p>${message}</p>` : ''}
         ${buttons}
-        <div style="text-align:right;margin-top:6px">
+        <div style="text-align:end;margin-top:6px">
           <button class="m-cancel btn-quiet">${t('Cancel')}</button>
         </div>
       </div>`;
@@ -521,7 +561,7 @@ function popMenu(x, y, items, { title = '', from = null } = {}) {
     const zoom = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ui-zoom')) || 1;
     const w = menu.offsetWidth * zoom;
     const h = menu.offsetHeight * zoom;
-    const left = Math.max(4, Math.min(x, window.innerWidth - w - 4));
+    const left = NeoBidi.menuLeft(x, w, window.innerWidth, uiRtl());
     const top = y + h > window.innerHeight - 4 ? Math.max(4, y - h) : y;
     menu.style.left = left / zoom + 'px';
     menu.style.top = top / zoom + 'px';
@@ -603,7 +643,9 @@ let wordSegmenterLang = '';
 // a word holds at least one letter or digit, so French « » and spaced
 // dashes are not counted as words
 function countWords(text) {
-  const trimmed = text.trim();
+  // bidi format marks (LRM, RLM, ALM, embeddings, isolates) are not letters
+  // or spaces: removed, so one beside or inside a word leaves it one word
+  const trimmed = text.replace(/[\u200E\u200F\u061C\u202A-\u202E\u2066-\u2069]/g, '').trim();
   if (trimmed === '') return 0;
   if (window.Intl && Intl.Segmenter) {
     const script = SEGMENTED_SCRIPTS.find((s) => s.chars.test(trimmed));

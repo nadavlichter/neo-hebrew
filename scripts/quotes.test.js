@@ -14,7 +14,7 @@ const app = require('./app-files').appSource();
 const between = (from, to) => app.slice(app.indexOf(from), app.indexOf(to));
 const context = vm.createContext({ library: null, book: null, chapterHTML: {}, NeoI18n: { getLocale: () => 'en' } });
 vm.runInContext(between('function quoteOpenIn(', '// A hyphen standing on its own'), context);
-vm.runInContext('this.api = { typedQuote, quoteOpenIn, bookQuotes, singleQuotes, incomingQuotes, quoteRuns };', context);
+vm.runInContext('this.api = { typedQuote, quoteOpenIn, bookQuotes, singleQuotes, incomingQuotes, quoteRuns, hebrewBookQuotes, hebrewWordMark };', context);
 const { typedQuote, quoteOpenIn, bookQuotes, singleQuotes, incomingQuotes, quoteRuns } = context.api;
 
 test('incoming prose curves the quotes and apostrophe reported in #506', () => {
@@ -173,4 +173,55 @@ test('a » ending a paragraph is not counted as opening the next one', () => {
   const paras = [{ textContent: '«\u202fTrente-deux\u202f!\u202f»' }, { textContent: '' }, { textContent: 'Elise danced up the steps.' }];
   const body = { closest: () => ({ children: paras, textContent: paras.map((p) => p.textContent).join('') }) };
   assert.equal(bookQuotes(body).open, '„');
+});
+
+
+describe('Hebrew book quotation styles', () => {
+  for (const [chapter, want] of [
+    ['', '“שלום”'], ['“מילה”', '“שלום”'], ['„מילה”', '„שלום”'], ['„מילה“', '„שלום“'], ['”מילה”', '”שלום”']
+  ]) {
+    test('a Hebrew book preserves ' + (chapter || 'the high-curly default'), () => {
+      assert.equal(type('he', '"שלום"', chapter), want);
+    });
+  }
+  test('a Hebrew book keeps its low-opening inner quotes', () => {
+    assert.equal(type('he', '"אמר \'שלום\'"', '„מילה”'), '„אמר ‚שלום’”');
+  });
+  test('an acronym is not evidence for symmetric closing-high quotes', () => {
+    assert.equal(context.api.hebrewBookQuotes('צה”ל'), null);
+  });
+  test('a Hebrew book language wins over a French spellcheck setting', () => {
+    context.book = { language: 'he', chapterOrder: [] };
+    try { assert.equal(type('fr', '"שלום"'), '“שלום”'); }
+    finally { context.book = null; }
+  });
+});
+
+
+describe('Hebrew abbreviation marks', () => {
+  for (const before of ['צה', 'ת', 'ד', 'י', 'תשפ', 'שָׁ']) {
+    test('a following Hebrew letter makes gershayim after ' + before, () => {
+      assert.equal(context.api.hebrewWordMark(before, '"', 'ל'), '״');
+    });
+  }
+  for (const before of ['ג', 'ז', 'צ', 'פרופ', 'שָׁ']) {
+    test('geresh after ' + before, () => assert.equal(context.api.hebrewWordMark(before, "'"), '׳'));
+  }
+  test('a double quote waits for a Hebrew letter, not a space or Latin letter', () => {
+    for (const next of ['', ' ', '.', 'A', '7', 'ְ']) assert.equal(context.api.hebrewWordMark('שלום', '"', next), '');
+  });
+  test('Latin, Arabic, digits, maqaf and a bare vowel point are not Hebrew letters', () => {
+    for (const before of ['abc', 'مرحبا', '123', 'בית־', 'ְ', 'שלום ']) {
+      assert.equal(context.api.hebrewWordMark(before, "'"), '');
+      assert.equal(context.api.hebrewWordMark(before, '"', 'א'), '');
+    }
+  });
+});
+
+
+test('Hebrew quote style is kept from formatted text in another chapter', () => {
+  context.book = { language: 'he', chapterOrder: ['old'] };
+  context.chapterHTML = { old: '<p>„<i>מילה</i>“</p>' };
+  try { assert.equal(bookQuotes({ closest: () => null }).close, '“'); }
+  finally { context.book = null; context.chapterHTML = {}; }
 });

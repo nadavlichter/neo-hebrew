@@ -67,7 +67,7 @@ function showFirstRun() {
 
   // Step 2: fonts, with a WYSIWYG sample
   function preview() {
-    document.documentElement.style.setProperty('--body-font', BODY_FONTS[picked.body]);
+    document.documentElement.style.setProperty('--body-font', bodyFontStack(picked.body));
     document.documentElement.style.setProperty('--dropcap-font', DROPCAP_FONTS[picked.dropcap]);
   }
   function buildFontStep() {
@@ -77,8 +77,8 @@ function showFirstRun() {
       const b = document.createElement('button');
       b.className = 'fr-font' + (picked.body === name ? ' sel' : '');
       b.textContent = name;
-      b.style.fontFamily = BODY_FONTS[name];
-      b.onmouseenter = () => { document.documentElement.style.setProperty('--body-font', BODY_FONTS[name]); };
+      b.style.fontFamily = bodyFontStack(name);
+      b.onmouseenter = () => { document.documentElement.style.setProperty('--body-font', bodyFontStack(name)); };
       b.onmouseleave = preview;
       b.onclick = () => {
         picked.body = name;
@@ -101,6 +101,7 @@ function showFirstRun() {
       b.onmouseleave = preview;
       b.onclick = () => {
         picked.dropcap = key;
+        picked.dropcapChosen = true;
         buildFontStep();
         preview();
       };
@@ -111,6 +112,7 @@ function showFirstRun() {
 
   $('#fr-done').onclick = async () => {
     library.fonts = { body: picked.body, dropcap: picked.dropcap };
+    if (picked.dropcapChosen) library.fonts.dropcapChosen = true;
     library.firstRunDone = true;
     // the shelf was drawn (and the author record seeded as Anonymous) before
     // the name was typed — carry the name across
@@ -259,6 +261,7 @@ async function renderShelves() {
 
     const label = document.createElement('span');
     label.className = 'shelf-label';
+    label.dir = 'auto'; // the writer's own name for it
     // on a touch screen the name turns editable only when tapped, so a long
     // press (the menu) never wakes the keyboard or selects the text
     label.contentEditable = NO_HOVER ? 'false' : 'true';
@@ -346,11 +349,12 @@ async function renderShelves() {
       e.preventDefault();
       row.classList.add('drag-over');
       const ind = dropIndicator();
+      const rowDir = getComputedStyle(row).direction; // books flow right to left in a right-to-left interface
       let placed = false;
       for (const t of row.querySelectorAll('.book:not(.dragging)')) {
         const r = t.getBoundingClientRect();
-        // cursor above this book's row, or on its row and left of center
-        if (e.clientY < r.top || (e.clientY < r.bottom && e.clientX < r.left + r.width / 2)) {
+        // cursor above this book's row, or on its row and before its center
+        if (e.clientY < r.top || (e.clientY < r.bottom && NeoBidi.beforeMiddle(e.clientX, r.left, r.width, rowDir))) {
           row.insertBefore(ind, t);
           placed = true;
           break;
@@ -471,7 +475,8 @@ function fitBoundShelves() {
     const box = row.getBoundingClientRect();
     if (!last || !box.width) continue;
     const zoom = box.width / row.offsetWidth; // the Interface Size zoom
-    row.style.setProperty('--stitch', Math.ceil((last.getBoundingClientRect().right - box.left) / zoom) + 'px');
+    const lr = last.getBoundingClientRect();
+    row.style.setProperty('--stitch', Math.ceil((getComputedStyle(row).direction === 'rtl' ? box.right - lr.left : lr.right - box.left) / zoom) + 'px');
     for (const l of row.querySelectorAll('.pt-label')) {
       l.style.fontSize = '';
       l.style.letterSpacing = '';
@@ -519,15 +524,15 @@ const shelfOf = (bookId) => library.shelves.find((s) => s.bookIds.includes(bookI
 
 function pageKindName(kind) {
   return {
-    cover: t('Cover'),
-    copyright: t('Copyright'),
-    dedication: t('Dedication'),
-    epigraph: t('Epigraph'),
-    prologue: t('Prologue'),
-    part: t('Part'),
-    epilogue: t('Epilogue'),
-    acknowledgments: t('Acknowledgments'),
-    about: t('About the Author')
+    cover: tBook('Cover'),
+    copyright: tBook('Copyright'),
+    dedication: tBook('Dedication'),
+    epigraph: tBook('Epigraph'),
+    prologue: tBook('Prologue'),
+    part: tBook('Part'),
+    epilogue: tBook('Epilogue'),
+    acknowledgments: tBook('Acknowledgments'),
+    about: tBook('About the Author')
   }[kind] || kind;
 }
 
@@ -538,7 +543,7 @@ function roman(n) {
   for (const [v, s] of r) while (n >= v) { out += s; n -= v; }
   return out;
 }
-const partLabel = (n) => t('Part {n}', { n: roman(n) });
+const partLabel = (n) => plain(tBook('Part {n}', { n: roman(n) }));
 
 // the name a bound book goes out under: the pen name that owns the shelf
 function shelfAuthorName(shelf) {
@@ -550,7 +555,7 @@ function shelfAuthorName(shelf) {
 // a new page starts with what every such page says, where that's knowable
 const PAGE_STARTERS = {
   copyright: (shelf) =>
-    `<p>${escHtml(t('Copyright © {year} {name}', { year: String(new Date().getFullYear()), name: shelfAuthorName(shelf) }))}</p>` +
+    `<p>${escHtml(plain(t('Copyright © {year} {name}', { year: String(new Date().getFullYear()), name: shelfAuthorName(shelf) })))}</p>` +
     `<p>${escHtml(t('All rights reserved.'))}</p>`
 };
 
@@ -563,6 +568,7 @@ async function createPageBook(shelf, kind) {
   meta.kind = kind;
   meta.shelfId = shelf.id; // which bound book it belongs to, for anyone reading the folder
   if (written) {
+    newBookLanguage(meta);
     meta.subtitle = shelf.name;
     meta.tabNames = {
       notes: (library.tabDefaults && library.tabDefaults.notes) || 'Notes',
@@ -761,7 +767,7 @@ function pageTile(shelf, meta, label) {
   el.draggable = false;
   const span = document.createElement('span');
   span.className = 'pt-label';
-  span.textContent = label;
+  setIsolated(span, label);
   el.appendChild(span);
   el.title = label;
   el.onclick = () => openPage(shelf, meta, label);
@@ -794,7 +800,7 @@ function ghostPage(shelf, kind) {
   el.type = 'button';
   el.className = 'ghost-page' + spineFit(pageKindName(kind));
   el.innerHTML = '<span class="gp-plus" aria-hidden="true">+</span><span class="pt-label"></span>';
-  el.querySelector('.pt-label').textContent = pageKindName(kind);
+  setIsolated(el.querySelector('.pt-label'), pageKindName(kind));
   el.title = pageKindName(kind);
   el.setAttribute('aria-label', pageKindName(kind));
   el.onclick = () => addPage(shelf, kind);
@@ -956,7 +962,7 @@ async function openPageSheet(shelf, meta, label) {
   body.addEventListener('paste', (e) => {
     e.preventDefault();
     const pasted = e.clipboardData.getData('text/html');
-    const text = e.clipboardData.getData('text/plain');
+    const text = dropEmbeddings(e.clipboardData.getData('text/plain'));
     if (pasted) document.execCommand('insertHTML', false, cleanPasteHtml(pasted));
     else if (text) {
       text.replace(/\r/g, '').split(/\n+/).filter((p) => p.trim()).forEach((p, i) => {
@@ -995,9 +1001,9 @@ function caretToEnd(el) {
 async function openTitlePage(shelf, coverMeta) {
   const live = (await window.neo.readBookMeta(coverMeta.id)) || coverMeta;
   const bd = sheetBackdrop('title', t('Title Page'), `
-    <div class="tp-field tp-t" contenteditable="true" role="textbox" spellcheck="false"></div>
-    <div class="tp-field tp-s" contenteditable="true" role="textbox" spellcheck="false"></div>
-    <div class="tp-field tp-a" contenteditable="true" role="textbox" spellcheck="false"></div>`);
+    <div class="tp-field tp-t" dir="auto" contenteditable="true" role="textbox" spellcheck="false"></div>
+    <div class="tp-field tp-s" dir="auto" contenteditable="true" role="textbox" spellcheck="false"></div>
+    <div class="tp-field tp-a" dir="auto" contenteditable="true" role="textbox" spellcheck="false"></div>`);
   const fields = ['.tp-t', '.tp-s', '.tp-a'].map((s) => bd.querySelector(s));
   const [ti, su, au] = fields;
   const text = (el) => el.textContent.replace(/\s+/g, ' ').trim();
@@ -1027,7 +1033,7 @@ async function openTitlePage(shelf, coverMeta) {
     f.addEventListener('input', () => { if (!f.textContent) f.innerHTML = ''; });
     f.addEventListener('paste', (e) => {
       e.preventDefault();
-      document.execCommand('insertText', false, e.clipboardData.getData('text/plain').replace(/\s+/g, ' '));
+      document.execCommand('insertText', false, dropEmbeddings(e.clipboardData.getData('text/plain')).replace(/\s+/g, ' '));
     });
     f.addEventListener('keydown', (e) => {
       if (e.key !== 'Enter') return;
@@ -1171,6 +1177,7 @@ function bookTile(meta, opts = {}) {
     <div class="b-painting" hidden></div>
     <div class="b-progress" hidden><div></div></div>`;
   el.querySelector('.b-author').textContent = meta.author || '';
+  if (NeoBidi.strongDir(meta.author) === 'rtl') el.querySelector('.b-author').classList.add('au-rtl');
   if (isScript(meta)) scriptTile(el, meta);
   else {
     dressTile(el, meta);
@@ -1367,7 +1374,7 @@ async function duplicateBook(meta) {
   }
   let copy;
   try {
-    copy = await window.neo.duplicateBook(meta.id, t('{title} (copy)', { title: meta.title }));
+    copy = await window.neo.duplicateBook(meta.id, plain(t('{title} (copy)', { title: meta.title })));
   } catch (err) {
     window.neo.logError('duplicate: ' + (err && err.stack || err));
     toast(t('Couldn’t copy the book: {error}', { error: plainError(err) }), 8000);
@@ -1538,12 +1545,31 @@ async function refreshCover(meta, el) {
   dressTile(el, live);
 }
 
+// A new book in a right-to-left interface is written in that language and
+// direction (D1). In a left-to-right one nothing is set, so the book's
+// language keeps following the library's spellcheck language as always.
+function newBookLanguage(meta) {
+  const lang = rtlInterfaceLanguage();
+  if (!lang) return meta;
+  meta.language = lang;
+  meta.direction = 'rtl';
+  return meta;
+}
+// the interface's base language code when it runs right to left, else ''
+function rtlInterfaceLanguage() {
+  const code = NeoI18n.getLocale();
+  if (!NeoBidi.isRtlLang(code)) return '';
+  const base = String(code).toLowerCase().split(/[-_]/)[0];
+  return base === 'iw' ? 'he' : base === 'ji' ? 'yi' : base;
+}
+
 async function createBookOnShelf(shelf) {
   const meta = await window.neo.createBook({ author: displayAuthor() });
   meta.tabNames = {
     notes: (library.tabDefaults && library.tabDefaults.notes) || 'Notes',
     outline: (library.tabDefaults && library.tabDefaults.outline) || 'Outline'
   };
+  newBookLanguage(meta);
   await writeBookMeta(meta.id, meta);
   await placeTitle(shelf, meta.id);
   await writeLibrary(library);
@@ -1621,6 +1647,7 @@ $('#add-shelf-btn').onclick = async () => {
     for (const a of others) {
       const slot = document.createElement('div');
       slot.className = 'pen-slot';
+      slot.dir = 'auto';
       slot.textContent = a.name;
       slot.dataset.authorId = a.id;
       slot.addEventListener('dragover', (e) => {
@@ -1645,7 +1672,9 @@ $('#add-shelf-btn').onclick = async () => {
     rack.style.top = (r.bottom + 8) + 'px';
     // the rack hangs from the name and reaches leftward, so the names on its
     // planks sit well clear of the cover riding under the cursor
-    rack.style.right = Math.max(12, window.innerWidth - r.right) + 'px';
+    // (right to left: it hangs from the name's left edge and reaches rightward)
+    if (uiRtl()) rack.style.left = Math.max(12, r.left) + 'px';
+    else rack.style.right = Math.max(12, window.innerWidth - r.right) + 'px';
     document.body.appendChild(rack);
     requestAnimationFrame(() => rack.classList.add('open'));
   }
@@ -1705,7 +1734,7 @@ async function undoShelfMove() {
 }
 document.addEventListener('keydown', (e) => {
   if (!$('#editor-view').hidden || !lastShelfMove) return;
-  const undoKey = e.key === 'Escape' || ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key.toLowerCase() === 'z');
+  const undoKey = e.key === 'Escape' || ((e.metaKey || e.ctrlKey) && !e.shiftKey && latinKey(e).toLowerCase() === 'z');
   if (!undoKey) return;
   if (document.querySelector('.modal-backdrop:not([hidden])')) return;
   e.preventDefault();

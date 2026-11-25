@@ -109,6 +109,18 @@ When it's done, **File → Export** makes a PDF formatted the way the industry e
 
 Everything else works in scripts too: Notes, Darlings, ⌘⇧X placeholders, goals and sprints, and ⌘E, which emails you a PDF of the script.
 
+**Writing in Hebrew**
+
+NEO writes right to left. You don't have to switch anything on: a new book started while NEO's own language is Hebrew (Options → Interface language) is a Hebrew book, and in any other language a book flips the moment you type the first Hebrew letter into it. A book you import or open that is mostly Hebrew opens right to left too. The page, the margins, the drop cap, the chapter cards and the exports all turn with it. Words NEO prints in the book, like פרק 1, come out in the book's language, whatever NEO's own language is.
+
+The book's direction is one choice for the whole book. Format → Book Direction changes it. A paragraph can differ: the first letter you type into an empty paragraph decides it, except that English typed into a Hebrew paragraph leaves it right to left. To set one yourself, Format → Paragraph Direction (⌃⌘→ for right to left, ⌃⌘← for left to right on a Mac; Ctrl + right Shift or left Shift on Windows). Only a paragraph that differs from the book is marked in the file, so a Hebrew book's files stay clean. These items, with the two marks below, show when Alignment and other fonts is on in Options, and always when your book or NEO is Hebrew.
+
+When Hebrew and English or numbers sit on one line and a comma or bracket lands on the wrong side, Format → Insert Right-to-Left Mark (or Left-to-Right Mark) puts an invisible mark there. Format → Non-Breaking Marks shows them as small gray signs. NEO never adds one for you.
+
+Type a quotation mark between two Hebrew letters and you get a gershayim (צה״ל), type an apostrophe after one and you get a geresh (ג׳ירפה); ⌘Z gives back the plain mark. Quotes curl as “…”. Format → Insert Maqaf types the ־ that joins two words.
+
+Hebrew has no capital letters, so a script can't tell a character's name from the rest by capitals. A Hebrew script (right-click the shelf's + → New Script, in Hebrew) is the same page mirrored. Scene headings start with פנים. or חוץ. (with the period) and NEO knows the rest from there. For the other lines you can say what they are: start a line with @ for a character, . for a scene heading, > for a transition. The mark comes off and the line becomes that element, as in Fountain. NEO also guesses names it has already seen.
+
 **Getting your book out**
 
 When your draft is done, the File menu exports to Word for your editor so they can track changes, or PDF, plain text, or Markdown. There's a proper **EPUB** option with a real table of contents built to Amazon's guidelines, but this is not highly tested yet, so use at your own risk!

@@ -163,3 +163,14 @@ test('German: a new book is set in »…«, a book already in „…“ keeps it
   assert.deepEqual(plain(vm.runInContext('bookQuotes(body)', context)), { open: '«', close: '»' });
   assert.deepEqual(plain(vm.runInContext('singleQuotes(body)', context)), { open: '‹', close: '›' });
 });
+
+
+test('Hebrew maqaf and mirrored brackets are not dialogue dashes', () => {
+  for (const text of ['בית־ספר', 'בית־ספר (חדש)', '[בית־ספר]', '{בית־ספר}', '«בית־ספר»', 'מילה ־ מילה']) {
+    assert.equal(dialogueDashes(text, en), text);
+    const runs = [{ text: text.slice(0, 3), i: true }, { text: text.slice(3) }];
+    dashRuns(runs, en, { start: true, end: true });
+    assert.equal(runs.map((r) => r.text).join(''), text);
+    assert.equal(runs[0].i, true);
+  }
+});

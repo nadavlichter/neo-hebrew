@@ -201,8 +201,8 @@ function vimKey(e) {
   }
   const back = 'backward', fwd = 'forward';
   switch (k) {
-    case 'h': case 'Backspace': vimMove(back, 'character', times); break;
-    case 'l': case ' ': vimMove(fwd, 'character', times); break;
+    case 'h': case 'Backspace': vimMove('left', 'character', times); break;
+    case 'l': case ' ': vimMove('right', 'character', times); break;
     case 'j': case 'Enter': for (let i = 0; i < times; i++) vimLine(fwd, 'line'); break;
     case 'k': for (let i = 0; i < times; i++) vimLine(back, 'line'); break;
     case 'w': case 'b': case 'e': for (let i = 0; i < times; i++) vimWord(k); break;
@@ -348,7 +348,7 @@ document.addEventListener('keydown', (e) => {
 // default), null for a chapter with no prose yet. Breaks, outline ghosts,
 // poetry, flush lines, script lines and empty lines don't count. A tie goes
 // to the later paragraph.
-function chapterAlign(html) {
+function chapterAlign(html, dir) {
   const count = {};
   let best = null;
   for (const m of String(html || '').matchAll(/<p\b([^>]*)>([\s\S]*?)<\/p>/g)) {
@@ -357,6 +357,7 @@ function chapterAlign(html) {
     if (!m[2].replace(/<[^>]*>|&nbsp;|\s/g, '')) continue;
     let a = (/text-align:\s*([a-z]+)/.exec(m[1]) || [])[1] || '';
     if (!['center', 'right', 'justify'].includes(a)) a = '';
+    if (a === 'right' && dir === 'rtl') a = ''; // the start side of a right-to-left page is no alignment (D3)
     count[a] = (count[a] || 0) + 1;
     if (best === null || count[a] >= count[best]) best = a;
   }
@@ -365,9 +366,9 @@ function chapterAlign(html) {
 // A new chapter's empty first line, set the way the nearest story with
 // words in it is: the chapters before it first, then the ones after (a new
 // first chapter). Pages such as a dedication or a part are passed over.
-function newChapterHtml(order, at, htmlOf, story) {
+function newChapterHtml(order, at, htmlOf, story, dir) {
   for (const c of [...order.slice(0, at).reverse(), ...order.slice(at)]) {
-    const a = story(c) ? chapterAlign(htmlOf(c)) : null;
+    const a = story(c) ? chapterAlign(htmlOf(c), dir) : null;
     if (a !== null) return a ? `<p style="text-align: ${a};"><br></p>` : '<p><br></p>';
   }
   return '<p><br></p>';
@@ -377,7 +378,7 @@ function newChapterHtml(order, at, htmlOf, story) {
 function createChapterAt(idx) {
   const chId = 'ch-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
   // (from the order as it stands, before the new chapter joins it)
-  const first = isScript() ? '<p><br></p>' : newChapterHtml(book.chapterOrder, idx, (c) => chapterHTML[c], (c) => isStory(c));
+  const first = isScript() ? '<p><br></p>' : newChapterHtml(book.chapterOrder, idx, (c) => chapterHTML[c], (c) => isStory(c), bookDirection());
   book.chapterOrder.splice(idx, 0, chId);
   chapterHTML[chId] = first;
   persistChapter(chId);

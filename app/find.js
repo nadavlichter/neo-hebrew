@@ -97,16 +97,38 @@ function lowerSameLength(s) {
   return out;
 }
 
+// Hebrew points and cantillation (not maqaf, paseq, sof pasuq or nun hafukha,
+// which are punctuation) and the bidi marks are not matched on: searching
+// שלום finds שָׁלוֹם and the other way round
+const FIND_MARK = /[\u0591-\u05BD\u05BF\u05C1\u05C2\u05C4\u05C5\u05C7]/;
+const FIND_SKIP = /[\u0591-\u05BD\u05BF\u05C1\u05C2\u05C4\u05C5\u05C7\u200E\u200F\u061C\u2066-\u2069]/;
+
+// s read for matching: lower case, the skipped marks left out, geresh and
+// gershayim as ' and ". at[i] is where folded character i sits in s
+function foldForFind(s) {
+  const l = lowerSameLength(s);
+  let out = '';
+  const at = [];
+  for (let i = 0; i < l.length; i++) {
+    const c = l[i];
+    if (FIND_SKIP.test(c)) continue;
+    out += c === '\u05F3' ? "'" : c === '\u05F4' ? '"' : c;
+    at.push(i);
+  }
+  return { out, at, l };
+}
+
 // every place q appears in texts read end to end, any case, as
 // { from: [node, offset], to: [node, offset] } with to's offset exclusive
 function matchSpans(texts, q) {
   const found = [];
   if (!q || !texts.length) return found;
-  const ql = lowerSameLength(q);
-  const all = lowerSameLength(texts.join(''));
+  const ql = foldForFind(q).out;
+  if (!ql) return found;
+  const { out: all, at, l } = foldForFind(texts.join(''));
   const starts = [];
-  let at = 0;
-  for (const t of texts) { starts.push(at); at += t.length; }
+  let pos0 = 0;
+  for (const t of texts) { starts.push(pos0); pos0 += t.length; }
   // the node holding the character at i
   const nodeAt = (i) => {
     let n = 0;
@@ -115,10 +137,14 @@ function matchSpans(texts, q) {
   };
   let pos = 0;
   while ((pos = all.indexOf(ql, pos)) !== -1) {
-    const a = nodeAt(pos);
-    const b = nodeAt(pos + q.length - 1);
-    found.push({ from: [a, pos - starts[a]], to: [b, pos + q.length - starts[b]] });
-    pos += q.length;
+    const first = at[pos];
+    let end = at[pos + ql.length - 1] + 1;
+    // points sitting on the last letter belong to the match
+    while (end < l.length && FIND_MARK.test(l[end])) end++;
+    const a = nodeAt(first);
+    const b = nodeAt(end - 1);
+    found.push({ from: [a, first - starts[a]], to: [b, end - starts[b]] });
+    pos += ql.length;
   }
   return found;
 }
@@ -328,9 +354,10 @@ async function addImportedBooks(results, shelf) {
     };
     let words = 0;
     meta.chapterTitles = {};
+    const dirOfBook = importedBookDirection(meta, r.chapters);
     for (const ch of r.chapters) {
       const chId = 'ch-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
-      await window.neo.writeChapter(meta.id, chId, importedChapterHTML(ch));
+      await window.neo.writeChapter(meta.id, chId, importedChapterHTML(ch, dirOfBook));
       if (ch.title) meta.chapterTitles[chId] = ch.title;
       if (ch.role) meta[ch.role] = chId;
       meta.chapterOrder.push(chId);
@@ -348,12 +375,26 @@ async function addImportedBooks(results, shelf) {
 }
 
 // One imported chapter's paragraphs as a chapter body
-function importedChapterHTML(ch) {
+function importedChapterHTML(ch, bookDirection = 'ltr') {
   return ch.paras.map((p) => {
     if (p.scene) return '<p class="scene-break">***</p>';
+    // a paragraph says which way it runs only where that differs from the book (D2)
+    const dir = NeoBidi.paraDirAttr(p.dir, bookDirection);
     // hyphens set as dialogue dashes, the same as typing them
-    return `<p>${importedEmphasis(escHtml(incomingQuotes(dialogueDashes(p.text || '', dashStyle()), bookQuotes(), singleQuotes())))}</p>`;
+    const html = p.html ? p.html.replace(/ data-note-dir="(rtl|ltr)"/g, (m, value) => value === bookDirection ? '' : m)
+      : importedEmphasis(escHtml(incomingQuotes(dialogueDashes(p.text || '', dashStyle()), bookQuotes(), singleQuotes())));
+    return `<p${dir ? ` dir="${dir}"` : ''}>${html}</p>`;
   }).join('') || '<p><br></p>';
+}
+
+// A new book from an import: right to left (and Hebrew, when the letters are)
+// when most of its strong letters are. Never 'ltr': an English import writes
+// no direction at all, so its book.json and chapters are as they always were.
+function importedBookDirection(meta, chapters) {
+  const text = chapters.map((ch) => ch.paras.map((p) => p.text || '').join(' ')).join(' ');
+  const set = NeoBidi.inferRtlBook(meta, text);
+  if (set) Object.assign(meta, set);
+  return NeoBidi.bookDir(meta);
 }
 
 // Files brought into the open book as chapters (#178), before the chapter
@@ -372,7 +413,8 @@ async function importChaptersIntoBook(results, beforeId) {
       // line gave (the parser harvests it as the book's) names the chapter;
       // in a file of several, that title was the old book's
       const title = ch.title || (r.chapters.length === 1 && r.title) || '';
-      adding.push({ title, html: importedChapterHTML(ch) });
+      // the book keeps its direction; a paragraph that runs the other way says so
+      adding.push({ title, html: importedChapterHTML(ch, NeoBidi.bookDir(book)) });
     });
   }
   if (!adding.length || !book || book.id !== bookId) return 0;

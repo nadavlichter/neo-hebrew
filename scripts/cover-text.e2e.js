@@ -79,6 +79,40 @@ test('a book read from disk: the same', async () => {
   assert.doesNotMatch(text, /Jane Writer|Copyright|Ohio/);
 });
 
+
+// cover type in Hebrew (#11.1): small words split off, right-set styles mirror,
+// and a mixed title still lays out; English plans carry no rtl mark
+test('cover titles: Hebrew sets right to left, connectors split, English unchanged', async () => {
+  const r = await js(`(async () => {
+    await NeoCovers.ready;
+    const plan = (title, author, id) => NeoCovers.plan({ id, title, author: author || '' });
+    const out = {};
+    const he = plan('המסע של הנסיך', 'דנה לוי', 'he1');
+    out.he = { rtl: he.rtl, authorRtl: he.authorRtl, small: he.lines.map((l) => l.small), text: he.lines.map((l) => l.text) };
+    const mixed = plan('המסע ל-Mars 2', '', 'mx1');
+    out.mixed = { rtl: mixed.rtl, text: mixed.lines.map((l) => l.text), sizes: mixed.lines.map((l) => l.size > 0) };
+    const en = plan('The Road to Mars', 'Jane Writer', 'en1');
+    out.en = { rtl: en.rtl, authorRtl: en.authorRtl };
+    // every template renders both without throwing, canvas state restored
+    const canvases = [];
+    for (let i = 0; i < 24; i++) {
+      const c = NeoCovers.renderFull({ id: 'h' + i, title: 'המסע של הנסיך הקטן', author: 'דנה לוי' }, { width: 208, height: 300 });
+      const e = NeoCovers.renderFull({ id: 'e' + i, title: 'The Little Prince', author: 'Jane' }, { width: 208, height: 300 });
+      canvases.push(!!c && !!e && c.getContext('2d').direction === document.createElement('canvas').getContext('2d').direction);
+    }
+    out.allOk = canvases.every(Boolean);
+    return out;
+  })()`);
+  assert.equal(r.he.rtl, true);
+  assert.equal(r.he.authorRtl, true);
+  assert.ok(r.he.small.includes(true), 'של is a small connector line: ' + JSON.stringify(r.he));
+  assert.equal(r.mixed.rtl, true);
+  assert.ok(r.mixed.sizes.every(Boolean));
+  assert.equal(r.en.rtl, false);
+  assert.equal(r.en.authorRtl, false);
+  assert.ok(r.allOk);
+});
+
 /* ---------- runner ---------- */
 
 async function main() {

@@ -66,6 +66,7 @@ function writeSettings(obj) {
 // settings.json. First launch follows the system language when NEO has it.
 // ---------------------------------------------------------------------------
 const NeoI18n = require('./i18n.js');
+const NeoBidi = require('./bidi.js');
 const { t } = NeoI18n;
 const LOCALES_DIR = path.join(__dirname, 'locales');
 let uiLanguage = 'en';
@@ -134,10 +135,64 @@ function initLanguage() {
   loadLanguage(saved || resolveLanguage(sys) || 'en');
 }
 
+// In a right-to-left interface, a menu label or a dialog's words that mix
+// Hebrew with Latin text or numbers start with a right-to-left mark (RLM,
+// U+200F) so the line reads from the right, whichever letter comes first.
+// Left-to-right languages get their text back untouched.
+const RLM = '\u200F';
+function rtlText(s) {
+  if (typeof s !== 'string' || !s || NeoI18n.getDir() !== 'rtl') return s;
+  return s.replace(/^(?=[^\n])(?!\u200F)/gm, RLM);
+}
+// a menu template with every label marked (accelerators and roles stay)
+function rtlTemplate(items) {
+  if (NeoI18n.getDir() !== 'rtl') return items;
+  return items.map((it) => {
+    const out = { ...it };
+    if (typeof out.label === 'string') out.label = rtlText(out.label);
+    if (typeof out.sublabel === 'string') out.sublabel = rtlText(out.sublabel);
+    if (Array.isArray(out.submenu)) out.submenu = rtlTemplate(out.submenu);
+    return out;
+  });
+}
+const buildTemplate = (items) => Menu.buildFromTemplate(rtlTemplate(items));
+// every native dialog goes through these two, so the marks are put in once
+for (const name of ['showMessageBox', 'showMessageBoxSync']) {
+  if (!dialog || typeof dialog[name] !== 'function') continue; // (tests stand in for electron)
+  const orig = dialog[name].bind(dialog);
+  dialog[name] = (...args) => {
+    const i = args.length > 1 ? 1 : 0; // (window, options) or (options)
+    const o = args[i];
+    if (o && typeof o === 'object' && NeoI18n.getDir() === 'rtl') {
+      args[i] = {
+        ...o,
+        message: rtlText(o.message),
+        detail: rtlText(o.detail),
+        title: rtlText(o.title),
+        checkboxLabel: rtlText(o.checkboxLabel),
+        buttons: Array.isArray(o.buttons) ? o.buttons.map(rtlText) : o.buttons
+      };
+    }
+    return orig(...args);
+  };
+}
+if (dialog && typeof dialog.showErrorBox === 'function') {
+  const origErrorBox = dialog.showErrorBox.bind(dialog);
+  dialog.showErrorBox = (title, content) => origErrorBox(rtlText(title), rtlText(content));
+}
+
 // The window asks once, synchronously, before any of its code runs
 ipcMain.on('i18n:get', (e) => {
   const english = readLocaleFile('en') || {};
   e.returnValue = { locale: uiLanguage, dict: localeDict(uiLanguage), base: english };
+});
+
+// The words a book carries (Chapter 1, Prologue) in the book's own language, whatever the
+// interface speaks. Only a code with a file in locales/ answers; anything else is null.
+ipcMain.handle('i18n:dict', (_e, code) => {
+  if (typeof code !== 'string' || !/^[a-z]{2,3}(-[A-Za-z]{2,4})?$/.test(code)) return null;
+  const locale = resolveLanguage(code);
+  return locale ? { locale, dict: localeDict(locale) } : null;
 });
 
 // View → Language: save the choice, redraw the menus, and let the window
@@ -1255,8 +1310,12 @@ ipcMain.handle('app:lookUp', (e) => {
   return true;
 });
 
+// stickies and darlings, read as a book opens: one still in iCloud is waited
+// for like a chapter, not refused on the spot (the book wouldn't open). One
+// iCloud never sends still refuses, so nothing is written over it.
 ipcMain.handle('json:read', (_e, bookId, name, fallback) => {
-  return readJSON(path.join(bookDir(bookId), libName(name) + '.json'), fallback);
+  const fp = path.join(bookDir(bookId), libName(name) + '.json');
+  return afterLocal([fp], () => readJSON(fp, fallback), () => { throw cloudError(fp); });
 });
 
 ipcMain.handle('json:write', (_e, bookId, name, data) => {
@@ -1674,6 +1733,8 @@ function hyphenatorFor(lang) {
   return hyphenators[key];
 }
 function hyphenateWord(word, hy, nouns) {
+  // Hebrew words never take line-end hyphens, even inside Latin prose.
+  if (/[\u0590-\u05ff\ufb1d-\ufb4f]/.test(word)) return word;
   // a capital is a name, so the word stays whole; except in German, where
   // every noun has one
   if (!nouns && /^\p{Lu}/u.test(word)) return word;
@@ -1690,6 +1751,8 @@ function hyphenateWord(word, hy, nouns) {
   return out;
 }
 function hyphenateHtml(html, lang) {
+  // A Hebrew book keeps Latin quotations whole too; no patterns are loaded.
+  if (/^(?:he|iw)(?:[-_]|$)/i.test(String(lang || ''))) return html;
   const hy = hyphenatorFor(lang);
   if (!hy) return html;
   const nouns = /^de\b/i.test(String(lang || ''));
@@ -1802,7 +1865,10 @@ function printWindow() {
 // The cover template: the whole wrap (back, spine, front) at KDP's size for
 // this page count, with the bleed, the trim, the spine, the safe areas and
 // the barcode's place drawn in, each labelled. A designer works on top of it.
-function kdpCoverHtml({ trim, paper, pages, title, author }) {
+function kdpCoverHtml({ trim, paper, pages, title, author, dir, language }) {
+  const rtl = dir === 'rtl';
+  const code = language || rtl ? resolveLanguage(language || 'he') || 'en' : null;
+  const tBook = code ? NeoI18n.translator(code, localeDict(code), readLocaleFile('en') || {}) : t;
   const [tw, th] = KDP_TRIMS[trim];
   const bleed = 0.125;
   const spine = pages * KDP_PAPER[paper];
@@ -1813,13 +1879,13 @@ function kdpCoverHtml({ trim, paper, pages, title, author }) {
   const esc = (v) => String(v || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   const fmt = (n) => n.toFixed(3).replace(/0+$/, '').replace(/\.$/, '');
   const mm = (n) => (n * 25.4).toFixed(1);
-  const backX = bleed;
+  const backX = rtl ? bleed + tw + spine : bleed;
   const spineX = bleed + tw;
-  const frontX = bleed + tw + spine;
+  const frontX = rtl ? bleed : bleed + tw + spine;
   const safe = 0.125;
   const spineText = pages >= 79;
-  const paperName = { white: t('white paper'), cream: t('cream paper'), groundwood: t('groundwood paper') }[paper];
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
+  const paperName = { white: tBook('white paper'), cream: tBook('cream paper'), groundwood: tBook('groundwood paper') }[paper];
+  return `<!DOCTYPE html><html${rtl ? ` lang="${esc(code || 'he')}" dir="rtl"` : ''}><head><meta charset="utf-8"><style>
 @page { size: ${inch(W)} ${inch(H)}; margin: 0; }
 html, body { margin: 0; padding: 0; }
 body { width: ${inch(W)}; height: ${inch(H)}; position: relative; overflow: hidden; font: 8pt/1.35 -apple-system, "Segoe UI", "Helvetica Neue", Arial, sans-serif; color: #1f4f8a; background: #fff; }
@@ -1834,23 +1900,28 @@ div { position: absolute; box-sizing: border-box; }
 .panel { display: flex; align-items: center; justify-content: center; text-align: center; color: #9fb4cf; font-size: 20pt; letter-spacing: 0.12em; }
 .info { color: #1f4f8a; }
 .vert { writing-mode: vertical-rl; display: flex; align-items: center; justify-content: center; text-align: center; color: #1f4f8a; font-size: 7pt; }
-</style></head><body>
+${rtl ? `
+.panel { letter-spacing: normal; }
+.info { text-align: right; }
+/* Reverse the English spine's rotation; designer/KDP Previewer review is still needed. */
+.vert { writing-mode: horizontal-tb; transform: rotate(-90deg); }
+` : ''}</style></head><body>
 ${box(0, 0, W, H, 'bleed')}
 ${box(bleed, bleed, W - 2 * bleed, H - 2 * bleed, 'trim')}
 ${box(spineX, bleed, spine, th, 'spine')}
 ${box(backX + safe, bleed + safe, tw - 2 * safe, th - 2 * safe, 'safe')}
 ${box(frontX + safe, bleed + safe, tw - 2 * safe, th - 2 * safe, 'safe')}
 ${spine > 0.125 ? box(spineX + 0.0625, bleed + safe, spine - 0.125, th - 2 * safe, 'spinesafe') : ''}
-${box(backX, bleed, tw, th, 'panel', esc(t('BACK COVER')))}
-${box(frontX, bleed, tw, th, 'panel', esc(t('FRONT COVER')))}
-${box(backX + tw - 0.25 - 2, bleed + th - 0.25 - 1.2, 2, 1.2, 'barcode', esc(t('Barcode area (KDP adds it here)')) + '<br>2 × 1.2 in')}
+${box(backX, bleed, tw, th, 'panel', esc(tBook('BACK COVER')))}
+${box(frontX, bleed, tw, th, 'panel', esc(tBook('FRONT COVER')))}
+${box(rtl ? backX + 0.25 : backX + tw - 0.25 - 2, bleed + th - 0.25 - 1.2, 2, 1.2, 'barcode', esc(tBook('Barcode area (KDP adds it here)')) + (rtl ? '<br><span dir="ltr">2 × 1.2 in</span>' : '<br>2 × 1.2 in'))}
 ${box(frontX + safe + 0.05, bleed + safe + 0.05, tw - 2 * safe - 0.1, 1.6, 'lbl info', `<b>${esc(title)}</b>${author ? ' · ' + esc(author) : ''}<br>
-${esc(t('Full cover: {w} × {h} in ({wmm} × {hmm} mm), bleed included', { w: fmt(W), h: fmt(H), wmm: mm(W), hmm: mm(H) }))}<br>
-${esc(t('Trim: {w} × {h} in · {pages} pages · {paper}', { w: fmt(tw), h: fmt(th), pages, paper: paperName }))}<br>
-${esc(t('Spine: {s} in ({smm} mm)', { s: fmt(spine), smm: mm(spine) }))}${spineText ? '' : ' · ' + esc(t('under 79 pages: no text on the spine'))}<br>
-<span style="color:#c0392b">${esc(t('Pink: bleed, cut off. Red line: trim.'))}</span> ${esc(t('Dashed: keep text inside.'))}<br>
-${esc(t('Use this page as a guide layer and hide it before you export your cover: one PDF, at least 300 DPI.'))}</div>`)}
-${spine > 0.3 ? box(spineX, bleed, spine, th, 'vert', esc(t('SPINE'))) : ''}
+${esc(NeoI18n.plain(tBook('Full cover: {w} × {h} in ({wmm} × {hmm} mm), bleed included', { w: fmt(W), h: fmt(H), wmm: mm(W), hmm: mm(H) })))}<br>
+${esc(NeoI18n.plain(tBook('Trim: {w} × {h} in · {pages} pages · {paper}', { w: fmt(tw), h: fmt(th), pages, paper: paperName })))}<br>
+${esc(NeoI18n.plain(tBook('Spine: {s} in ({smm} mm)', { s: fmt(spine), smm: mm(spine) })))}${spineText ? '' : ' · ' + esc(tBook('under 79 pages: no text on the spine'))}<br>
+<span style="color:#c0392b">${esc(tBook('Pink: bleed, cut off. Red line: trim.'))}</span> ${esc(tBook('Dashed: keep text inside.'))}<br>
+${esc(tBook('Use this page as a guide layer and hide it before you export your cover: one PDF, at least 300 DPI.'))}</div>`)}
+${spine > 0.3 ? box(spineX, bleed, spine, th, 'vert', esc(tBook('SPINE'))) : ''}
 </body></html>`;
 }
 
@@ -1871,7 +1942,7 @@ ipcMain.handle('print:paperback', async (_e, job) => {
     closePrintWindow();
   }
 });
-async function makePaperback({ html, trim, paper, pagesGuess, title, author, defaultName, language }) {
+async function makePaperback({ html, trim, paper, pagesGuess, title, author, defaultName, language, dir }) {
   if (!KDP_TRIMS[trim] || !KDP_PAPER[paper]) throw new Error('Unknown trim size or paper');
   const [tw, th] = KDP_TRIMS[trim];
   const win = BrowserWindow.getFocusedWindow();
@@ -1903,7 +1974,7 @@ async function makePaperback({ html, trim, paper, pagesGuess, title, author, def
   const coverPath = filePath.replace(/\.pdf$/i, '') + ' - ' + t('cover template') + '.pdf';
   try {
     fs.writeFileSync(filePath, result.pdf);
-    const cover = kdpCoverHtml({ trim, paper, pages, title, author });
+    const cover = kdpCoverHtml({ trim, paper, pages, title, author, language, dir });
     const [cw, ch] = [0.25 + tw * 2 + pages * KDP_PAPER[paper], th + 0.25];
     fs.writeFileSync(coverPath, (await renderPaged(cover, { width: cw, height: ch, plain: true })).pdf);
   } catch (err) {
@@ -2045,26 +2116,79 @@ function docxStyleFormats(stylesXml) {
     // the style's name: always English in the file ("heading 1", "Title"),
     // while its id follows Word's language ("berschrift1", "Titre1")
     const name = (body.match(/<w:name\s+w:val="([^"]*)"/) || [])[1] || '';
-    raw[m[1]] = { basedOn, name, bold: docxFormatOn(rpr, 'w:b'), italic: docxFormatOn(rpr, 'w:i') };
+    // right-to-left text (7.1): Word keeps its bold and italic in the
+    // complex-script twins, w:bCs and w:iCs, and the paragraph's direction
+    // in the style's w:pPr as w:bidi
+    const ppr = (body.match(/<w:pPr(?:\s[^>]*)?>[\s\S]*?<\/w:pPr>/) || [''])[0];
+    raw[m[1]] = {
+      basedOn, name, bold: docxFormatOn(rpr, 'w:b'), italic: docxFormatOn(rpr, 'w:i'),
+      boldCs: docxFormatOn(rpr, 'w:bCs'), italicCs: docxFormatOn(rpr, 'w:iCs'), bidi: docxFormatOn(ppr, 'w:bidi'),
+      isDefaultPara: /^<w:style\s[^>]*w:type="paragraph"[^>]*w:default="(1|true|on)"/.test(m[0]) ||
+        /^<w:style\s[^>]*w:default="(1|true|on)"[^>]*w:type="paragraph"/.test(m[0])
+    };
   }
+  // the document's defaults (w:docDefaults): a Hebrew template sets every
+  // paragraph right to left there
+  const pDef = (stylesXml.match(/<w:pPrDefault>[\s\S]*?<\/w:pPrDefault>/) || [''])[0];
+  const root = { bold: false, italic: false, bidi: docxFormatOn(pDef, 'w:bidi') };
   const resolve = (id, depth) => {
     if (out[id]) return out[id];
     const st = raw[id];
-    if (!st || depth > 8) return { bold: false, italic: false };
-    const base = st.basedOn ? resolve(st.basedOn, depth + 1) : { bold: false, italic: false };
+    if (!st || depth > 8) return root;
+    const base = st.basedOn ? resolve(st.basedOn, depth + 1) : root;
     out[id] = {
       name: st.name,
       bold: st.bold === undefined ? base.bold : st.bold,
-      italic: st.italic === undefined ? base.italic : st.italic
+      italic: st.italic === undefined ? base.italic : st.italic,
+      // undefined when no style in the chain says: the run falls back on w:b/w:i
+      boldCs: st.boldCs === undefined ? base.boldCs : st.boldCs,
+      italicCs: st.italicCs === undefined ? base.italicCs : st.italicCs,
+      bidi: st.bidi === undefined ? base.bidi : st.bidi
     };
     return out[id];
   };
   for (const id of Object.keys(raw)) resolve(id, 0);
+  // a paragraph with no w:pStyle is in the default paragraph style ("Normal"):
+  // only its direction is taken from there, so bold and italic stay as before
+  const dflt = Object.keys(raw).find((id) => raw[id].isDefaultPara);
+  out[''] = { bold: false, italic: false, bidi: dflt ? out[dflt].bidi : root.bidi };
   return out;
 }
 
+// Is a run's text right to left (7.1)? <w:rtl/> on the run says so; else its
+// first strong letter; a run of spaces and punctuation follows its paragraph
+function docxRunRtl(rpr, text, paraDir) {
+  const flag = docxFormatOn(rpr, 'w:rtl');
+  if (flag !== undefined) return flag;
+  const d = NeoBidi.strongDir(text);
+  return d ? d === 'rtl' : paraDir === 'rtl';
+}
+
+// Word's inline characters, shared by prose and the plain-text note editor.
+const DOCX_TEXT = /<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>|<w:tab\s*\/>|<w:br(\s[^>]*)?\/>|<w:cr\s*\/>|<w:noBreakHyphen\s*\/>/g;
+function docxTextToken(t) {
+  if (t[1] !== undefined) return decodeEntities(t[1]);
+  if (t[0].startsWith('<w:tab')) return ' ';
+  if (t[0].startsWith('<w:noBreakHyphen')) return '\u2011';
+  return /w:type="(page|column)"/.test(t[0]) ? '' : '\n';
+}
+function docxFootnoteMap(xml, styles) {
+  const notes = Object.create(null);
+  for (const m of xml.matchAll(/<w:footnote\b([^>]*)>([\s\S]*?)<\/w:footnote>/g)) {
+    const id = (m[1].match(/\bw:id="([^"]+)"/) || [])[1];
+    if (!id || /\bw:type="(?:separator|continuationSeparator|continuationNotice)"/.test(m[1])) continue;
+    const paras = [...m[2].matchAll(/<w:p[ >][\s\S]*?<\/w:p>/g)].map((p) => ({
+      text: [...p[0].matchAll(DOCX_TEXT)].map(docxTextToken).join('').trim(),
+      dir: docxParagraphToMarkdown(p[0], styles).dir
+    })).filter((p) => p.text);
+    const text = paras.map((p) => p.text).join('\n');
+    if (text) notes[id] = { text, dir: paras[0].dir || NeoBidi.strongDir(paras[0].text) || '' };
+  }
+  return notes;
+}
+
 // Convert one Word paragraph's bold/italic XML into markdown text with bold/italic
-function docxParagraphToMarkdown(p, styles = {}) {
+function docxParagraphToMarkdown(p, styles = {}, notes = {}) {
   const pageBreak = /<w:br [^>]*w:type="page"/.test(p) || /<w:pageBreakBefore/.test(p);
   // Word marks headings with a paragraph style such as <w:pStyle w:val="Heading1"/>.
   // Any heading style (Heading1..9, Heading 1..9, or bare "Heading") starts a new chapter and
@@ -2078,32 +2202,59 @@ function docxParagraphToMarkdown(p, styles = {}) {
   // names the book, later ones start chapters (see chapterize)
   const title = /^title$/i.test(pStyle) || /^title$/i.test(sName);
   // what the paragraph's style says, before any run has its say
-  const pBase = styles[pStyle] || { bold: false, italic: false };
-  const runs = [...p.matchAll(/<w:r[ >][\s\S]*?<\/w:r>/g)].map((rm) => {
+  const pBase = styles[pStyle] || styles[''] || { bold: false, italic: false };
+  // direction (7.1): <w:bidi/> in the paragraph's own properties (a section
+  // break's w:sectPr inside them is the section's, not the paragraph's), else
+  // its style's, else the document default; unset when nothing says
+  const ppr = ((p.match(/<w:pPr(?:\s[^>]*)?>[\s\S]*?<\/w:pPr>/) || [''])[0])
+    .replace(/<w:sectPr[\s\S]*?<\/w:sectPr>/g, '').replace(/<w:rPr>[\s\S]*?<\/w:rPr>/g, '');
+  let bidi = docxFormatOn(ppr, 'w:bidi');
+  if (bidi === undefined) bidi = pBase.bidi;
+  const dir = bidi === undefined ? undefined : bidi ? 'rtl' : 'ltr';
+  const runs = [...p.matchAll(/<w:r[ >][\s\S]*?<\/w:r>/g)].flatMap((rm) => {
     const r = rm[0];
     const rpr = (r.match(/<w:rPr>[\s\S]*?<\/w:rPr>/) || [''])[0];
     // the run's text in order: its words, and the tabs, line breaks and
     // no-break hyphens between them (only <w:t> used to count, which ran
     // "red,⏎violets" together into "red,violets")
-    const text = [...r.matchAll(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>|<w:tab\/>|<w:br(\s[^>]*)?\/>|<w:cr\/>|<w:noBreakHyphen\/>/g)]
-      .map((t) => {
-        if (t[1] !== undefined) return escapeMarks(decodeEntities(t[1]));
-        if (t[0].startsWith('<w:tab')) return ' ';
-        if (t[0].startsWith('<w:noBreakHyphen')) return '\u2011';
-        if (/w:type="(page|column)"/.test(t[0])) return '';
-        return '\n';
-      }).join('');
+    const parts = [];
+    let pending = '';
+    const tokens = /<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>|<w:tab\s*\/>|<w:br(\s[^>]*)?\/>|<w:cr\s*\/>|<w:noBreakHyphen\s*\/>|<w:footnoteReference\b[^>]*\/>/g;
+    for (const token of r.matchAll(tokens)) {
+      if (token[0].startsWith('<w:footnoteReference')) {
+        const id = (token[0].match(/\bw:id="([^"]+)"/) || [])[1];
+        if (notes[id]) {
+          if (pending) parts.push({ text: pending });
+          pending = '';
+          parts.push({ fn: notes[id].text, fnDir: notes[id].dir });
+        }
+      } else pending += escapeMarks(docxTextToken(token));
+    }
+    if (pending) parts.push({ text: pending });
     const rStyle = (rpr.match(/<w:rStyle\s+w:val="([^"]*)"/) || [])[1];
     const rBase = rStyle && styles[rStyle] ? styles[rStyle] : pBase;
-    const b = docxFormatOn(rpr, 'w:b');
-    const i = docxFormatOn(rpr, 'w:i');
-    return { text, bold: b === undefined ? !!rBase.bold : b, italic: i === undefined ? !!rBase.italic : i };
+    return parts.map((part) => {
+      if (part.fn !== undefined) return part;
+      const text = part.text;
+      // right-to-left text keeps its emphasis in w:bCs/w:iCs; a producer that
+      // writes only w:b/w:i is still heard (Latin text keeps w:b/w:i alone)
+      if (docxRunRtl(rpr, text, dir)) {
+        const pick = (cs, plain, baseCs, basePlain) => {
+          for (const v of [docxFormatOn(rpr, cs), docxFormatOn(rpr, plain), baseCs, basePlain]) if (v !== undefined) return !!v;
+          return false;
+        };
+        return { text, bold: pick('w:bCs', 'w:b', rBase.boldCs, rBase.bold), italic: pick('w:iCs', 'w:i', rBase.italicCs, rBase.italic) };
+      }
+      const b = docxFormatOn(rpr, 'w:b');
+      const i = docxFormatOn(rpr, 'w:i');
+      return { text, bold: b === undefined ? !!rBase.bold : b, italic: i === undefined ? !!rBase.italic : i };
+    });
   });
   // make sure **one**"+"**two**" becomes one "**onetwo**", not "**one****two**"
   const merged = [];
   for (const run of runs) {
     const last = merged[merged.length - 1];
-    if (last && last.bold === run.bold && last.italic === run.italic) last.text += run.text;
+    if (last && last.fn === undefined && run.fn === undefined && last.bold === run.bold && last.italic === run.italic) last.text += run.text;
     else merged.push({ ...run });
   }
   // markers hug the words: "** bold **" isn't emphasis to a reader of
@@ -2118,10 +2269,38 @@ function docxParagraphToMarkdown(p, styles = {}) {
     if (run.italic) t = '*' + t + '*';
     return m[1] + t + m[3];
   };
-  const text = merged.map((run) => run.text.split('\n').map((piece) => wrap(run, piece)).join('\n'))
+  const text = merged.filter((run) => run.fn === undefined).map((run) => run.text.split('\n').map((piece) => wrap(run, piece)).join('\n'))
     .join('').replace(/[ \t]*\n[ \t]*/g, '\n').trim();
-  return { text, pageBreak, heading, title };
+  const result = dir ? { text, pageBreak, heading, title, dir } : { text, pageBreak, heading, title };
+  if (merged.some((run) => run.fn !== undefined)) {
+    // Only our own tags, escaped text and inert note attributes cross IPC.
+    // Notes on headings remain prose so title/chapter detection cannot lose them.
+    const esc = (v) => String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/\n/g, '&#10;');
+    result.html = merged.map((run) => {
+      if (run.fn !== undefined) return `<span class="fn" data-note="${esc(run.fn)}"${/^(rtl|ltr)$/.test(run.fnDir) ? ` data-note-dir="${run.fnDir}"` : ''} contenteditable="false">\u200B</span>`;
+      return run.text.split('\n').map((piece) => {
+        let html = esc(piece.replace(/\\([\\*_])/g, '$1'));
+        if (run.bold) html = '<b>' + html + '</b>';
+        if (run.italic) html = '<i>' + html + '</i>';
+        return html;
+      }).join('<br>');
+    }).join('')
+      // the text's lines were trimmed above; a leading or trailing break must
+      // go too, or the html's lines would not match the text's
+      .replace(/^(?:<br>)+|(?:<br>)+$/g, '');
+  }
+  return result;
 }
+
+// he: a Hebrew-letter numeral (א׳, י״א, יא, קכ״ג), up to the hundreds. Hebrew
+// letters sit outside \b's ASCII, so the line ends with a Unicode lookahead,
+// as the others do. The gershayim (״ or ASCII ") goes before the last letter,
+// the geresh (׳ or ASCII ') after a single one
+const HE_GERESH = '[׳\'’]';
+const HE_GERSHAYIM = '[״"”]';
+const HE_NUMERAL = '(?=[א-ת])(?:(?:ת{1,2}[קרש]?|[קרש])(?:' + HE_GERSHAYIM + '(?=[א-ת]))?)?' +
+  '(?:ט(?:' + HE_GERSHAYIM + '?[וז])|[יכלמנסעפצ](?:' + HE_GERSHAYIM + '?[א-ט])?|[א-ט])?' + HE_GERESH + '?';
+const HE_ORDINALS = 'ראשון|ראשונה|שני|שנייה|שניה|שלישי|שלישית|רביעי|רביעית|חמישי|חמישית|שישי|שישית|שביעי|שביעית|שמיני|שמינית|תשיעי|תשיעית|עשירי|עשירית';
 
 // Headings that are only NEO's own numbering, in the languages NEO speaks
 const CHAPTER_WORDS = new RegExp('^(' + [
@@ -2146,12 +2325,20 @@ const CHAPTER_WORDS = new RegExp('^(' + [
   // ko: the number sits inside ("제3장", "제2부", a serial's "제12화"). A bare
   // "3장" only as the whole line: "3장 남았다." is prose
   '프롤로그', '에필로그', '서장', '종장',
-  '제\\s*(?:\\d{1,3}|[일이삼사오육칠팔구십백]{1,4})\\s*[장부화]', '\\d{1,3}\\s*[장화]\\s*$'
+  '제\\s*(?:\\d{1,3}|[일이삼사오육칠팔구십백]{1,4})\\s*[장부화]', '\\d{1,3}\\s*[장화]\\s*$',
+  // he: "פרק" and "חלק" are also ordinary words (a joint, some of), so they
+  // count only with a number, an ordinal or a letter numeral after them
+  // A letter numeral with its ׳/״ counts anywhere; a bare one ("כה", "מה" are
+  // also words) only when the line ends there or a colon or dash follows
+  '(?:פרק|חלק)\\s+(?:\\d{1,3}|(?:' + HE_ORDINALS + ')|(?=\\S*[׳\'’״"”])' + HE_NUMERAL + '|' + HE_NUMERAL + '(?=\\s*(?:[:.\\-–—]|$)))',
+  'פרולוג', 'אפילוג',
+  // "מבוא" (entrance), "הקדמה" and "אחרית דבר" only as the whole line
+  '(?:הקדמה|מבוא|אחרית\\s+דבר)(?=\\s*[:.]?\\s*$)'
 ].join('|') + ')(?![\\p{L}\\d])', 'iu');
 
 // A manuscript's own Prologue / Epilogue headings give those chapters their role
-const PROLOGUE_WORDS = /^(prologue|prólogo|prologo|prolog|proloog|prológus|prologus|프롤로그|서장)(?![\p{L}\d])/iu;
-const EPILOGUE_WORDS = /^(epilogue|épilogue|epílogo|epilogo|epilog|epiloog|epilógus|epilogus|에필로그|종장)(?![\p{L}\d])/iu;
+const PROLOGUE_WORDS = /^(פרולוג|הקדמה|prologue|prólogo|prologo|prolog|proloog|prológus|prologus|프롤로그|서장)(?![\p{L}\d])/iu;
+const EPILOGUE_WORDS = /^(אפילוג|אחרית\s+דבר|epilogue|épilogue|epílogo|epilogo|epilog|epiloog|epilógus|epilogus|에필로그|종장)(?![\p{L}\d])/iu;
 
 // A text file in whatever it was saved as: UTF-8 (with or without its
 // mark), UTF-16 (Notepad's "Unicode"), or, when it isn't valid UTF-8, the
@@ -2192,14 +2379,36 @@ async function importFile(fp) {
     const xml = await docFile.async('string');
     const stylesFile = zip.file('word/styles.xml');
     const styles = docxStyleFormats(stylesFile ? await stylesFile.async('string') : '');
+    const notesFile = zip.file('word/footnotes.xml');
+    const notes = docxFootnoteMap(notesFile ? await notesFile.async('string') : '', styles);
     paras = [...xml.matchAll(/<w:p[ >][\s\S]*?<\/w:p>/g)]
-      .map((m) => docxParagraphToMarkdown(m[0], styles))
+      .map((m) => docxParagraphToMarkdown(m[0], styles, notes))
       // a line break inside a Word paragraph (a poem, an address) becomes
       // a paragraph of its own: NEO's lines are paragraphs
       .flatMap((p) => !p.text.includes('\n') ? [p]
-        : p.text.split('\n').map((text, i) => ({ ...p, text: text.trim(), pageBreak: p.pageBreak && i === 0, heading: p.heading && i === 0, title: p.title && i === 0 })));
+        : p.text.split('\n').map((text, i) => ({ ...p, ...(p.html ? { html: p.html.split('<br>')[i] || '' } : {}), text: text.trim(), pageBreak: p.pageBreak && i === 0, heading: p.heading && i === 0, title: p.title && i === 0 })));
+    // the section's <w:bidi/> (the body's last w:sectPr) is only a hint: when
+    // no paragraph says its own direction, a paragraph with no letter to go
+    // by (digits, punctuation) is right to left; letters still decide the rest
+    const sect = (xml.match(/<w:sectPr\b[\s\S]*?<\/w:sectPr>\s*<\/w:body>/) || [''])[0];
+    if (docxFormatOn(sect, 'w:bidi') && !paras.some((p) => p.dir)) {
+      for (const p of paras) if (p.text && !NeoBidi.strongDir(p.text)) p.dir = 'rtl';
+    }
   } else {
-    const raw = readTextFile(fp);
+    // a leading mark, and the embedding controls some Windows editors leave
+    // in a Hebrew file (U+202A to U+202E), are not the writer's words
+    let raw = readTextFile(fp).replace(/^\uFEFF/, '').replace(/[\u202A-\u202E]/g, '');
+    // Markdown written in Hebrew often wraps its blocks in <div dir="rtl">:
+    // the tags become marks of their own (never text) that set the direction
+    // of the paragraphs they hold
+    const divs = ext === '.md' && /<\/?div\b/i.test(raw);
+    if (divs) {
+      raw = raw.replace(/<div\b[^>]*>|<\/div\s*>/gi, (tag) => {
+        if (tag[1] === '/') return '\n\n\uE100end\uE100\n\n';
+        const m = /\bdir\s*=\s*["']?(rtl|ltr)\b/i.exec(tag);
+        return '\n\n\uE100' + (m ? m[1].toLowerCase() : 'same') + '\uE100\n\n';
+      });
+    }
     // Paragraphs are split on blank lines, unless the file barely has any
     // and puts each paragraph on a line of its own (Word's "Plain Text",
     // Notepad, Scrivener): then every line is a paragraph
@@ -2212,13 +2421,30 @@ async function importFile(fp) {
     paras = (perLine ? lines : raw.split(/(?:\r\n|\r|\n)\s*(?:\r\n|\r|\n)/))
       .map((b) => ({ text: (perLine ? b : b.replace(/\s*(?:\r\n|\r|\n)\s*/g, ' ')).trim(), pageBreak: false }))
       .filter((p) => p.text);
+    // direction (7.4): a <div dir> block says so; else the first strong letter
+    // of the paragraph does; digits and punctuation have none (dir stays unset)
+    const open = [];
+    paras = paras.filter((p) => {
+      const mark = /^\uE100(rtl|ltr|same|end)\uE100$/.exec(p.text);
+      if (mark) {
+        if (mark[1] === 'end') open.pop();
+        else open.push(mark[1] === 'same' ? (open[open.length - 1] || '') : mark[1]);
+        return false;
+      }
+      const dir = open[open.length - 1] || NeoBidi.strongDir(p.text);
+      if (dir) p.dir = dir;
+      return true;
+    });
   }
 
   // Chapterize: page breaks and heading lines start new chapters. Headings
   // include "Chapter N" styles plus bare chapter numbers — "7", "VII",
   // "Seven" — which get stripped so NEO's own numbering doesn't duplicate them.
   const SPELLED = /^(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty)\.?$/i;
-  const isNumeralish = (t) => /^\d{1,3}\.?$/.test(t) || /^[IVXLC]{1,7}\.?$/.test(t) || SPELLED.test(t);
+  // (he: a bare letter numeral must carry its geresh, gershayim or full stop: "יא" is a word)
+  const HE_BARE = new RegExp('^' + HE_NUMERAL + '\\.?$', 'u');
+  const isNumeralish = (t) => /^\d{1,3}\.?$/.test(t) || /^[IVXLC]{1,7}\.?$/.test(t) || SPELLED.test(t) ||
+    (/[׳'’״"”.]/.test(t) && HE_BARE.test(t));
   // Bare numbers only count as chapter markers when there's a ladder of them —
   // a story that merely OPENS with "Seven." keeps its seven.
   // a heading set in bold ("**Chapter 1**") is still a heading
@@ -2263,10 +2489,10 @@ async function importFile(fp) {
     };
     for (const p of paras) {
       const brk = usePageBreaks && p.pageBreak;
-      if (!p.text && !brk && !p.heading && !p.title) continue;
+      if (!p.text && !p.html && !brk && !p.heading && !p.title) continue;
       // a Title line before any prose is the book's title, not a chapter's
-      if (p.title && !seenProse && styledTitle === null && p.text) { styledTitle = titleOf(p.text); continue; }
-      const isH = p.heading || p.title || isHeading(p.text);
+      if (p.title && !p.html && !seenProse && styledTitle === null && p.text) { styledTitle = titleOf(p.text); continue; }
+      const isH = !p.html && (p.heading || p.title || isHeading(p.text));
       if (brk || isH) {
         // a heading that follows another with no prose between (a Google
         // Docs tab named "Chapter 2" holding a "The Long Way Home" heading)
@@ -2284,8 +2510,14 @@ async function importFile(fp) {
         curTitle = titleOf(p.text || ''); lastWasHeading = true; continue;
       } // the heading line is replaced by NEO's numbering
       lastWasHeading = false;
-      if (isBreak(p.text)) { cur.push({ scene: true }); continue; }
-      if (p.text) { cur.push({ text: p.text }); seenProse = true; }
+      if (!p.html && isBreak(p.text)) { cur.push({ scene: true }); continue; }
+      // dir (7.2): what the file said, else the paragraph's first strong
+      // letter; none for digits and punctuation, so the book's own applies
+      if (p.text || p.html) {
+        const dir = p.dir || NeoBidi.strongDir(p.text);
+        cur.push({ text: p.text, ...(dir ? { dir } : {}), ...(p.html ? { html: p.html } : {}) });
+        seenProse = true;
+      }
     }
     close();
     return chapters;
@@ -2326,13 +2558,15 @@ async function importFile(fp) {
     return words.length <= 5 && words.every((w) => /^\p{Lu}/u.test(w) || particle.test(w)) ? m[1] : null;
   };
   const first = chapters[0];
-  if (first && first.paras.length) {
+  if (first && first.paras.length && !first.paras[0].html && !(first.paras[1] || {}).html) {
     const t0 = (first.paras[0].text || '').trim();
     const t1 = first.paras.length > 1 ? (first.paras[1].text || '').trim() : '';
     const titleish = t0 && t0.length < 90 && !/[.!?]$/.test(t0) && (
       (norm(t0).length > 3 && norm(name).includes(norm(t0))) ||
       !!bylineOf(t1) ||
-      (t0 === t0.toUpperCase() && /\p{Lu}.*\p{Lu}/u.test(t0) && t0.length < 60)
+      // a line in capitals: Hebrew (and CJK) letters have no case, so a line
+      // holding any is no all-caps title, even with NASA in it
+      (t0 === t0.toUpperCase() && /\p{Lu}.*\p{Lu}/u.test(t0) && !/[\p{Lo}\p{Lm}]/u.test(t0) && t0.length < 60)
     );
     if (titleish) {
       title = bare(t0);
@@ -2586,7 +2820,7 @@ function createWindow() {
     items.push({ role: 'copy', label: t('Copy'), enabled: !!can.canCopy });
     if (params.isEditable) items.push({ role: 'paste', label: t('Paste'), enabled: !!can.canPaste });
     items.push({ type: 'separator' }, { role: 'selectAll', label: t('Select All') });
-    Menu.buildFromTemplate(items).popup({ window: win });
+    buildTemplate(items).popup({ window: win });
   });
 
   // NEO does its own spellchecking (see spell:* handlers) — the engine's
@@ -2844,9 +3078,19 @@ ipcMain.on('uizoom:state', (_e, z) => {
   uiZoomState = z;
   try { buildMenu(); } catch (err) { logError('menu', err); }
 });
+// Format → Align Paragraph's four choices. In a right-to-left book they list Right first, then
+// Center, Left, Justify (Hebrew Word's order); the keys stay with their letters.
+function alignItems() {
+  const item = (label, accelerator, value) => ({ label, accelerator, type: 'radio', checked: viewState.align === value, click: () => sendToWindow({ type: 'align', value }) });
+  const left = item(t('Left'), 'CmdOrCtrl+Shift+L', 'left');
+  const center = item(t('Center'), 'CmdOrCtrl+Shift+C', 'center');
+  const right = item(t('Right'), 'CmdOrCtrl+Shift+R', 'right');
+  const justify = item(t('Justify'), 'CmdOrCtrl+Shift+J', 'justify');
+  return viewState.bookDir === 'rtl' ? [right, center, left, justify] : [left, center, right, justify];
+}
 // View and Format menu ticks: the focus level, the page, Brighter Interface, and the writing
 // format the page is using (body font, drop cap style, paragraph alignment).
-let viewState = { focus: 'off', pageTheme: 'night', uiBright: false, bodyFont: '', dropCap: 'literary', align: null };
+let viewState = { focus: 'off', pageTheme: 'night', uiBright: false, bodyFont: '', dropCap: 'literary', align: null, paraDir: null, bookDir: null };
 let keptTheme = null;
 ipcMain.on('view:state', (e, st) => {
   st = st || {};
@@ -2856,7 +3100,9 @@ ipcMain.on('view:state', (e, st) => {
     uiBright: !!st.uiBright,
     bodyFont: typeof st.bodyFont === 'string' ? st.bodyFont : '',
     dropCap: typeof st.dropCap === 'string' ? st.dropCap : 'literary',
-    align: ['left', 'center', 'right', 'justify'].includes(st.align) ? st.align : null
+    align: ['left', 'center', 'right', 'justify'].includes(st.align) ? st.align : null,
+    paraDir: ['rtl', 'ltr'].includes(st.paraDir) ? st.paraDir : null,
+    bookDir: ['rtl', 'ltr'].includes(st.bookDir) ? st.bookDir : null // null: no book open
   };
   // this computer's page, for the window's color at the next start
   if (next.pageTheme !== keptTheme) {
@@ -2912,6 +3158,8 @@ function featureTemplate(items, features) {
 
 function buildMenu() {
   const isMac = process.platform === 'darwin';
+  // the direction items show in simple NEO for a right-to-left book or interface (D6)
+  const rtlWriting = viewState.bookDir === 'rtl' || NeoI18n.getDir() === 'rtl';
   const isWin = process.platform === 'win32';
   // macOS and Windows name faces that ship with the OS. Linux has none of
   // them, so the menu names the faces bundled in fonts/ (see styles.css).
@@ -3089,12 +3337,47 @@ function buildMenu() {
           feature: 'formatting',
           visible: !scriptState.on, // a script's elements are placed where they print
           label: t('Align Paragraph'),
+          submenu: alignItems()
+        },
+        // Paragraph and Book Direction: behind the switch, except for a writer whose open
+        // book or interface runs right to left, who needs them (D6). Mac: ⌃⌘→ is right to
+        // left, ⌃⌘← left to right (the arrow points to the side the line starts from);
+        // Windows and Linux read Ctrl+Right/Left Shift in the window, which no accelerator can.
+        {
+          ...(rtlWriting ? {} : { feature: 'formatting' }),
+          visible: !scriptState.on, // a script's elements keep their direction
+          label: t('Paragraph Direction'),
           submenu: [
-            { label: t('Left'), accelerator: 'CmdOrCtrl+Shift+L', type: 'radio', checked: viewState.align === 'left', click: () => sendToWindow({ type: 'align', value: 'left' }) },
-            { label: t('Center'), accelerator: 'CmdOrCtrl+Shift+C', type: 'radio', checked: viewState.align === 'center', click: () => sendToWindow({ type: 'align', value: 'center' }) },
-            { label: t('Right'), accelerator: 'CmdOrCtrl+Shift+R', type: 'radio', checked: viewState.align === 'right', click: () => sendToWindow({ type: 'align', value: 'right' }) },
-            { label: t('Justify'), accelerator: 'CmdOrCtrl+Shift+J', type: 'radio', checked: viewState.align === 'justify', click: () => sendToWindow({ type: 'align', value: 'justify' }) }
+            { label: t('Right to Left'), ...(isMac ? { accelerator: 'Ctrl+Cmd+Right' } : {}), type: 'radio', checked: viewState.paraDir === 'rtl', click: () => sendToWindow({ type: 'paraDir', value: 'rtl' }) },
+            { label: t('Left to Right'), ...(isMac ? { accelerator: 'Ctrl+Cmd+Left' } : {}), type: 'radio', checked: viewState.paraDir === 'ltr', click: () => sendToWindow({ type: 'paraDir', value: 'ltr' }) }
           ]
+        },
+        {
+          ...(rtlWriting ? {} : { feature: 'formatting' }),
+          // a script too: a Hebrew script is the English page mirrored (Phase 10)
+          label: t('Book Direction'),
+          submenu: [
+            { label: t('Right to Left'), type: 'radio', checked: viewState.bookDir === 'rtl', click: () => sendToWindow({ type: 'bookDir', value: 'rtl' }) },
+            { label: t('Left to Right'), type: 'radio', checked: viewState.bookDir !== 'rtl', click: () => sendToWindow({ type: 'bookDir', value: 'ltr' }) }
+          ]
+        },
+        {
+          ...(rtlWriting ? {} : { feature: 'formatting' }),
+          visible: !scriptState.on,
+          label: t('Insert Left-to-Right Mark'),
+          click: () => sendToWindow({ type: 'insert-bidi-mark', mark: 'lrm' })
+        },
+        {
+          ...(rtlWriting ? {} : { feature: 'formatting' }),
+          visible: !scriptState.on,
+          label: t('Insert Right-to-Left Mark'),
+          click: () => sendToWindow({ type: 'insert-bidi-mark', mark: 'rlm' })
+        },
+        {
+          ...(rtlWriting ? {} : { feature: 'formatting' }),
+          visible: !scriptState.on,
+          label: t('Insert Maqaf'),
+          click: () => sendToWindow({ type: 'insert-maqaf' })
         },
         {
           feature: 'formatting',
@@ -3268,13 +3551,13 @@ function buildMenu() {
       ]
     }
   ];
-  const menu = Menu.buildFromTemplate(featureTemplate(template, featuresState));
+  const menu = buildTemplate(featureTemplate(template, featuresState));
   editMenuState.edit = null; // the old menu bar is going: forget its Edit menu first
   Menu.setApplicationMenu(menu);
   if (isMac) {
     // macOS adds its items as the menu opens: NEO hears each addition
     // (watchEditMenu) and looks again whenever the menu opens
-    const edit = menu.items.find((it) => it.submenu && it.label === t('Edit'));
+    const edit = menu.items.find((it) => it.submenu && menuTitle(it.label) === menuTitle(t('Edit')));
     if (edit) {
       // NEO's own Edit items in order; null stands for a separator
       editMenuState.index = menu.items.indexOf(edit);
@@ -3329,7 +3612,7 @@ function objcRuntime() {
 const editMenuState = { index: -1, ours: [], edit: null, watching: false, hiding: false };
 // macOS drops the & that Electron reads as a keyboard mnemonic ("Find & Replace"
 // arrives as "Find  Replace"), so titles are compared without it
-const menuTitle = (s) => String(s || '').replace(/&/g, '').replace(/\s+/g, ' ').trim();
+const menuTitle = (s) => String(s || '').replace(/\u200F/g, '').replace(/&/g, '').replace(/\s+/g, ' ').trim();
 // the actions Electron gives the items it builds: never macOS's own
 const ELECTRON_ACTIONS = new Set(['itemSelected:', 'undo:', 'redo:', 'cut:', 'copy:', 'paste:', 'pasteAndMatchStyle:', 'selectAll:']);
 const addr = (p) => (p ? objc.koffi.address(p) : 0n);

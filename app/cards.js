@@ -307,8 +307,9 @@ function outlineBoard() {
       const cells = [...board.querySelectorAll('.ob-cell')];
       const i = cells.indexOf(cell);
       let next = null;
-      if (e.key === 'ArrowRight') next = cells[i + 1];
-      else if (e.key === 'ArrowLeft') next = cells[i - 1];
+      // ← and → go the way the cards read: in a right-to-left book ← is next
+      const step = NeoBidi.rowStep(e.key, boardDir());
+      if (step) next = cells[i + step];
       else {
         // the card above or below: the nearest one in the next line
         const r = cell.getBoundingClientRect();
@@ -326,6 +327,13 @@ function outlineBoard() {
   });
   return board;
 }
+// The board reads the way the book does: it inherits #aux-paper's dir
+// (BOOK_DIR_BOXES), a script's scene cards too: a Hebrew script's run right
+// to left, as its page does (Phase 10).
+function setBoardDir(board) {
+  board.removeAttribute('dir'); // no attribute: an English book's board is as it was
+}
+const boardDir = () => (getComputedStyle(outlineBoard()).direction === 'rtl' ? 'rtl' : 'ltr');
 
 function viewSwitch() {
   let sw = $('#outline-views');
@@ -379,6 +387,7 @@ function renderBoard() {
   board.style.setProperty('--cz', z);
   board.classList.toggle('tiles', z < 0.8);
   board.classList.remove('script-board');
+  setBoardDir(board);
   if (isScript()) { renderScriptBoard(board); boardAddCard(board); boardHint(board); return; }
   const solo = soloStory();
   for (const chId of book.chapterOrder) {
@@ -432,7 +441,7 @@ function boardPartRow(chId) {
   row.setAttribute('aria-level', '3');
   const title = partTitleOf(chId);
   const label = document.createElement('span');
-  label.textContent = chapterName(chId) + (title ? ' · ' + title : '');
+  if (title) markedLabel(label, chapterName(chId), title); else setIsolated(label, chapterName(chId));
   const rule = document.createElement('span');
   rule.className = 'ob-rule';
   row.append(label, rule);
@@ -510,6 +519,7 @@ function chapterCard(chId, opening, solo) {
   if (chapterHasFlag(chId)) head.appendChild(cardFlag());
   const text = document.createElement('div');
   text.className = 'ob-text';
+  text.dir = 'auto';
   card.append(head, text);
   cell.dataset.excerpt = opening && opening.first ? quoted(opening.first) : '';
   fillCardText(cell, (book.chapterNotes || {})[chId] || '');
@@ -532,6 +542,7 @@ function sectionCard(chId, seg, segIdx, letterIdx) {
   if (seg.flag) head.appendChild(cardFlag());
   const text = document.createElement('div');
   text.className = 'ob-text';
+  text.dir = 'auto';
   const foot = document.createElement('div');
   foot.className = 'ob-foot';
   foot.textContent = seg.words ? cardWords(seg.words) : t('not written yet');
@@ -576,11 +587,12 @@ function openCard(cell, { fresh = false } = {}) {
   const text = cell.querySelector('.ob-text');
   const note = cardNoteOf(cell);
   cell.classList.add('open');
-  // a card near the right edge opens toward the left
+  // a card near the row's end (the right edge, or the left in a right-to-left
+  // book) opens back toward its start; 'open-left' is that, logically
   const board = outlineBoard();
   const r = cell.getBoundingClientRect();
   const b = board.getBoundingClientRect();
-  cell.classList.toggle('open-left', r.left + r.width * 2 > b.right + 4);
+  cell.classList.toggle('open-left', NeoBidi.opensBack(r.left, r.right, r.width * 2, b.left, b.right, boardDir()));
   text.classList.remove('excerpt', 'empty');
   text.textContent = note;
   // the page's own first line stays in view above the note, so opening a
@@ -637,7 +649,7 @@ function openCard(cell, { fresh = false } = {}) {
   text.addEventListener('blur', cardBlur);
   text.addEventListener('paste', (e) => {
     e.preventDefault();
-    const raw = e.clipboardData.getData('text/plain') || '';
+    const raw = dropEmbeddings(e.clipboardData.getData('text/plain')) || '';
     const items = pastedOutline(e.clipboardData);
     // a list (from Word, Obsidian, a notes app): one card per line (#348)
     if (items.length > 1) { pasteOutline(items); return; }
@@ -1642,7 +1654,7 @@ function dragOver(st) {
   st.float.style.top = (st.y - st.dy) + 'px';
   // the right edge opens the loose cards for a card that can go there
   const pane = $('#side-pane');
-  if (pane.classList.contains('drop-ready') && st.x > window.innerWidth - 36) pane.classList.add('open');
+  if (pane.classList.contains('drop-ready') && (uiRtl() ? st.x < 36 : st.x > window.innerWidth - 36)) pane.classList.add('open');
   st.target = dragTarget(st);
   showDropCaret(st.target);
   // near the top or bottom: the board scrolls
@@ -1686,7 +1698,7 @@ function dragTarget(st) {
   if (middle && best.dataset.kind === 'chapter' && (kind === 'section' || kind === 'loose' || (kind === 'chapter' && st.src.kind === 'chapter' && best.dataset.ch !== st.src.cell.dataset.ch))) {
     return { cell: best, side: 'into' };
   }
-  let side = st.x < r.left + r.width / 2 ? 'before' : 'after';
+  let side = NeoBidi.beforeMiddle(st.x, r.left, r.width, boardDir()) ? 'before' : 'after';
   // a chapter goes in only between chapters
   if (kind === 'chapter') {
     if (best.dataset.kind !== 'chapter' || side === 'after') {
@@ -1728,7 +1740,9 @@ function showDropCaret(target) {
     document.body.appendChild(caret);
   }
   const r = target.cell.getBoundingClientRect();
-  caret.style.left = (target.side === 'before' ? r.left - 2 : r.right - 1) + 'px';
+  // before is on the card's left edge, or its right in a right-to-left board
+  const leftEdge = (target.side === 'before') === (boardDir() !== 'rtl');
+  caret.style.left = (leftEdge ? r.left - 2 : r.right - 1) + 'px';
   caret.style.top = (r.top + 6) + 'px';
   caret.style.height = Math.max(10, r.height - 12) + 'px';
 }
@@ -1745,7 +1759,7 @@ function outlineFileTarget(x, y) {
     if (!cells.length) return { beforeId: null };
     const best = nearestCard(cells, x, y);
     const r = best.getBoundingClientRect();
-    if (best.dataset.kind === 'chapter' && x < r.left + r.width / 2) return { cell: best, side: 'before', beforeId: best.dataset.ch };
+    if (best.dataset.kind === 'chapter' && NeoBidi.beforeMiddle(x, r.left, r.width, boardDir())) return { cell: best, side: 'before', beforeId: best.dataset.ch };
     const run = cells.filter((c) => c.dataset.ch === best.dataset.ch);
     return { cell: run[run.length - 1], side: 'after', beforeId: chapterAfter(best.dataset.ch) };
   }
@@ -1948,10 +1962,12 @@ function sceneCard(sc) {
   head.append(num, len);
   const slug = document.createElement('div');
   slug.className = 'ob-slug';
+  slug.dir = 'auto';
   slug.textContent = sc.slug;
   slug.dataset.ph = t('INT. PLACE - DAY');
   const text = document.createElement('div');
   text.className = 'ob-text';
+  text.dir = 'auto';
   const foot = document.createElement('div');
   foot.className = 'ob-foot';
   foot.textContent = sc.cast.join(' · ');
@@ -2096,6 +2112,7 @@ function looseList() {
   }
   list = document.createElement('div');
   list.id = 'loose-list';
+  setBookBox(list);
   $('#sticky-list').after(list);
   list.addEventListener('pointerdown', (e) => {
     const cell = e.target.closest('.ob-cell');
@@ -2125,6 +2142,7 @@ function renderLooseCards() {
     cell.dataset.loose = c.id;
     const text = document.createElement('div');
     text.className = 'ob-text';
+    text.dir = 'auto';
     text.textContent = c.text;
     card.appendChild(text);
     if (c.html) {
@@ -2419,6 +2437,7 @@ function sideCardsBox() {
   if (box) return box;
   box = document.createElement('div');
   box.id = 'side-cards';
+  setBookBox(box);
   $('#side-head').before(box);
   return box;
 }
@@ -2489,6 +2508,7 @@ function sideCardsUpdate(force) {
     card.className = 'side-card side-card-' + c.kind + (c.current ? ' current' : '');
     const head = document.createElement('div');
     head.className = 'side-card-head';
+    head.dir = 'auto';
     head.textContent = c.label;
     // the card's name takes the caret to the top of its place on the page (#367)
     head.tabIndex = 0;
@@ -2506,6 +2526,7 @@ function sideCardsUpdate(force) {
       go();
     });
     const ta = document.createElement('textarea');
+    ta.dir = 'auto';
     ta.spellcheck = false;
     ta.rows = 1;
     ta.value = c.text;
@@ -2571,11 +2592,13 @@ function walkNoteUpdate() {
     hideWalkNote();
     walkEl = document.createElement('div');
     walkEl.className = 'walk-note';
+    walkEl.dir = getComputedStyle(p).direction; // indent and Dismiss sit on the paragraph's start side
     walkEl.contentEditable = 'false';
     walkEl.dataset.sec = note.id;
     walkEl.dataset.ch = at.chId;
     const text = document.createElement('span');
     text.className = 'wn-text';
+    text.dir = 'auto';
     text.textContent = note.text;
     const dismiss = document.createElement('button');
     dismiss.type = 'button';
@@ -2624,8 +2647,31 @@ document.addEventListener('input', (e) => { if (e.target && e.target.closest && 
 window.addEventListener('resize', queueWalkNote);
 
 let auxDirty = false;
+let auxPasting = false;
+let auxComposing = false, auxDirComposition = null;
 $('#aux-editor').addEventListener('keydown', (e) => { if (styleKeepScroll(e)) return; smartKeys(e, e.currentTarget); });
-$('#aux-editor').addEventListener('input', () => {
+// An untouched notes page stays empty for its placeholder and is never saved
+// on open. Start its first typed text in a native paragraph so it can carry
+// direction, without rebuilding text nodes or replacing the engine's undo.
+function startAuxParagraph(ed) {
+  if (!ed.textContent && (!ed.children.length || (ed.children.length === 1 && ed.firstElementChild.tagName === 'BR'))) {
+    document.execCommand('formatBlock', false, 'p');
+  }
+}
+$('#aux-editor').addEventListener('beforeinput', (e) => {
+  if (!['insertText', 'insertReplacementText'].includes(e.inputType) || e.isComposing || auxComposing || auxPasting) return;
+  startAuxParagraph(e.currentTarget);
+});
+$('#aux-editor').addEventListener('compositionstart', (e) => {
+  // Establish the empty note's block before the IME owns its text nodes.
+  startAuxParagraph(e.currentTarget);
+  auxComposing = true;
+  auxDirComposition = dirCompositionAt(e.currentTarget);
+});
+$('#aux-editor').addEventListener('input', (e) => {
+  const kind = e.inputType || '';
+  if ((kind === 'insertText' || kind === 'insertReplacementText') && !auxComposing && !e.isComposing && !auxPasting) firstLetterDir(e.currentTarget, e.data);
+  else if (kind.startsWith('history')) dropEmptyParaDir(e.currentTarget);
   auxDirty = true;
   scheduleAuxSave();
   notesTyped();
@@ -2634,13 +2680,25 @@ $('#aux-editor').addEventListener('input', () => {
     scheduleSpellRescan(key, $('#aux-editor'));
   }
 });
+$('#aux-editor').addEventListener('compositionend', (e) => {
+  auxComposing = false;
+  if (finishCompositionDir(e.currentTarget, e.data, auxDirComposition)) { auxDirty = true; scheduleAuxSave(); }
+  auxDirComposition = null;
+});
 // notes paste arrives clean, same as the manuscript
 $('#aux-editor').addEventListener('paste', (e) => {
   e.preventDefault();
   const html = e.clipboardData.getData('text/html');
-  const text = e.clipboardData.getData('text/plain');
-  if (html) document.execCommand('insertHTML', false, cleanPasteHtml(html));
-  else if (text) document.execCommand('insertText', false, text.replace(/\r/g, ''));
+  const text = dropEmbeddings(e.clipboardData.getData('text/plain'));
+  auxPasting = true;
+  try {
+    // (direction as in a chapter, against the book's: 7.3)
+    if (html) pasteHtmlInto(e.currentTarget, html);
+    else if (text) document.execCommand('insertText', false, text.replace(/\r/g, ''));
+  } finally { auxPasting = false; }
+  // a dir set after the engine's input event still reaches the save
+  auxDirty = true;
+  scheduleAuxSave();
 });
 function scheduleAuxSave() {
   clearTimeout(saveTimers.aux);
@@ -2672,7 +2730,7 @@ function flushAux() {
   const ed = $('#aux-editor');
   if (auxDirty && ed.dataset.kind && ed.dataset.book) {
     const key = ed.dataset.book + '/' + ed.dataset.kind;
-    auxPending[key] = { bookId: ed.dataset.book, kind: ed.dataset.kind, html: ed.innerHTML, inFlight: false };
+    auxPending[key] = { bookId: ed.dataset.book, kind: ed.dataset.kind, html: ed.innerHTML.replace(/<p\b[^>]*>/g, (tag) => savedParaDir(tag, bookDirection())), inFlight: false };
     auxDirty = false;
   }
   for (const key of Object.keys(auxPending)) {
@@ -2770,12 +2828,13 @@ function renderDarlings() {
     const el = document.createElement('div');
     el.className = 'darling';
     const content = document.createElement('div');
+    content.dir = 'auto'; // a passage keeps its own direction, whatever the book's
     if (d.html) content.innerHTML = d.html;
     else content.textContent = d.text;
     const meta = document.createElement('div');
     meta.className = 'd-meta';
     const when = fmtDate(d.date);
-    meta.innerHTML = `<span>${t('from {label} · {date} · {n} words', { label: d.chapterLabel, date: when, n: countWords(d.text) })}</span>
+    meta.innerHTML = `<span>${t('from {label} · {date} · {n} words', { label: escHtml(d.chapterLabel || ''), date: when, n: countWords(d.text) })}</span>
       <span><button class="d-restore">${t('Restore')}</button> <button class="d-del">${t('Delete forever')}</button></span>`;
     meta.querySelector('.d-restore').onclick = () => restoreDarling(d.id);
     meta.querySelector('.d-del').onclick = async () => {

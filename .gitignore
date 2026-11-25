@@ -22,6 +22,7 @@ pocket/www/covers.js
 pocket/www/styles.css
 pocket/www/fonts/
 pocket/www/i18n.js
+pocket/www/bidi.js
 pocket/www/jszip.min.js
 pocket/www/locales/
 pocket/www/hunspell/

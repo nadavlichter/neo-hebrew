@@ -63,9 +63,9 @@ function renderNav() {
     item.dataset.id = chId;
     item.innerHTML = `<div class="n-row" title="${t('Drag to reorder chapters')}"><span class="n-label"></span>
       <span style="display:flex;align-items:center">${story ? `<span class="n-words">${fmtNum(words)}</span>` : ''}${flagged ? `<span class="n-flag" title="${t('Unresolved placeholder')}"></span>` : ''}</span></div>`;
-    item.querySelector('.n-label').textContent = chId === solo
-      ? (book.title ? shownTitle(book.title) : t('The story'))
-      : (chTitle ? `${chapterMark(chId)} · ${chTitle}` : chapterName(chId));
+    const navLabel = item.querySelector('.n-label');
+    if (chId !== solo && chTitle) markedLabel(navLabel, chapterMark(chId), chTitle);
+    else setIsolated(navLabel, chId === solo ? (book.title ? shownTitle(book.title) : t('The story')) : chapterName(chId));
 
     // the row is the drag handle, so the note below stays freely editable
     const rowEl = item.querySelector('.n-row');
@@ -96,6 +96,7 @@ function renderNav() {
       // outline your whole book from this panel:
       const note = document.createElement('div');
       note.className = 'nav-note';
+      note.dir = 'auto';
       note.contentEditable = 'true';
       note.spellcheck = false;
       note.textContent = book.chapterNotes[chId] || '';
@@ -523,7 +524,7 @@ function renderNotesNav() {
     item.setAttribute('role', 'button');
     const n = words(text);
     item.innerHTML = `<div class="n-row"><span class="n-label"></span><span style="display:flex;align-items:center">${n ? `<span class="n-words">${fmtNum(n)}</span>` : ''}</span></div><div class="nav-note nav-note-ro"></div>`;
-    item.querySelector('.n-label').textContent = label;
+    setIsolated(item.querySelector('.n-label'), label);
     if (page !== 'book' && page === currentChapterId) {
       const dot = document.createElement('span');
       dot.className = 'notes-here';
@@ -557,7 +558,7 @@ function renderNotesNav() {
       const p = document.createElement('div');
       p.className = 'notes-part';
       const title = chapterText(chId).split('\n').map((s) => s.trim()).find(Boolean) || '';
-      p.textContent = title ? `${partLabel(parts)} · ${title}` : partLabel(parts);
+      if (title) markedLabel(p, partLabel(parts), title); else setIsolated(p, partLabel(parts));
       list.appendChild(p);
       continue;
     }
@@ -667,11 +668,13 @@ function renderNotesSide() {
     if (meta) {
       const m = document.createElement('div');
       m.className = 's-ch';
+      m.dir = 'auto';
       m.textContent = meta;
       c.appendChild(m);
     }
     const body = document.createElement('div');
     body.className = 'ns-text';
+    body.dir = 'auto';
     body.textContent = text;
     c.appendChild(body);
     const acts = document.createElement('div');
@@ -707,6 +710,7 @@ function renderNotesSide() {
   oc.className = 'sticky ns-card';
   const note = document.createElement('div');
   note.className = 'ns-outline';
+  note.dir = 'auto';
   note.contentEditable = 'true';
   note.spellcheck = false;
   note.setAttribute('role', 'textbox');
@@ -791,7 +795,7 @@ async function notesPageToDarlings(chId, label) {
       html,
       text: text.slice(0, 2000),
       chapterId: null,
-      chapterLabel: t('notes for {name}', { name: label }),
+      chapterLabel: plain(t('notes for {name}', { name: label })),
       date: new Date().toISOString()
     });
     return true;

@@ -10,7 +10,7 @@ const from = app.indexOf('// ---- non-breaking marks:');
 const to = app.indexOf('// ---- end of non-breaking marks ----');
 const context = vm.createContext({});
 vm.runInContext(app.slice(from, to), context);
-vm.runInContext('this.api = { NB_CHARS, nonBreakingRuns, SOFT_HYPHEN, softHyphenOffsets, softHyphenTick, SHY_MARK_WIDTH };', context);
+vm.runInContext('this.api = { NB_CHARS, nonBreakingRuns, SOFT_HYPHEN, softHyphenOffsets, softHyphenTick, SHY_MARK_WIDTH, BIDI_MARKS, bidiMarkOffsets };', context);
 const api = context.api;
 
 // the runs come out of another realm, so they are compared as JSON
@@ -109,4 +109,24 @@ test('at a line break: the mark is centred on the box\'s left edge, where the wo
 test('no box, or a box with no height, draws no mark', () => {
   assert.equal(api.softHyphenTick(null, { left: 0, top: 0 }, 17), null);
   assert.equal(api.softHyphenTick({ left: 5, top: 5, width: 0, height: 0 }, { left: 0, top: 0 }, 17), null);
+});
+
+
+test('all seven bidi controls have a visible screen glyph', () => {
+  const chars = '\u200e\u200f\u061c\u2066\u2067\u2068\u2069';
+  assert.equal(Object.keys(api.BIDI_MARKS).length, 7);
+  for (const c of chars) assert.ok(api.BIDI_MARKS[c] && !/[\u200e\u200f\u061c\u2066-\u2069]/.test(api.BIDI_MARKS[c]));
+});
+
+test('bidi mark offsets use UTF-16 positions, including repeated and edge controls', () => {
+  assert.equal(JSON.stringify(api.bidiMarkOffsets('\u200e😀א\u200f\u200f\u2066ab\u2069')), '[0,4,5,6,9]');
+  assert.equal(JSON.stringify(api.bidiMarkOffsets('abc שלום')), '[]');
+  assert.equal(JSON.stringify(api.bidiMarkOffsets('')), '[]');
+});
+
+test('bidi controls and soft hyphens keep their distinct marks', () => {
+  const text = 'a\u200e\u00adb\u2069';
+  assert.equal(JSON.stringify(api.bidiMarkOffsets(text)), '[1,4]');
+  assert.equal(offsets(text), '[2]');
+  assert.equal(runs(text), '[]');
 });

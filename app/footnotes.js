@@ -83,12 +83,14 @@ function openFootnote(mark) {
   const host = document.body.classList.contains('paged') ? $('#paper') : body.closest('.chapter');
   const el = document.createElement('div');
   el.className = 'fn-box';
+  el.dir = mark.dataset.noteDir || getComputedStyle(p).direction; // the box follows the page's direction (number and rule on its start side), not the interface's
   el.contentEditable = 'false';
   const num = document.createElement('span');
   num.className = 'fn-num';
   num.textContent = footnoteNumber(mark);
   const text = document.createElement('div');
   text.className = 'fn-text';
+  text.dir = mark.dataset.noteDir || 'auto'; // imported direction wins; otherwise the note's first letter
   text.contentEditable = 'plaintext-only';
   text.spellcheck = false;
   text.setAttribute('role', 'textbox');
@@ -202,6 +204,7 @@ function renderFootnoteList(body) {
     n.textContent = before + i + 1;
     const txt = document.createElement('span');
     txt.textContent = mark.dataset.note || '';
+    if (mark.dataset.noteDir) { row.dir = mark.dataset.noteDir; txt.dir = mark.dataset.noteDir; }
     row.append(n, txt);
     const go = () => { mark.scrollIntoView({ behavior: scrollBehavior(), block: 'center' }); openFootnote(mark); };
     row.addEventListener('click', go);
@@ -319,7 +322,7 @@ function renderStickies() {
     el.dataset.sid = s.id;
     el.innerHTML = `
       <div class="s-ch">${chIdx >= 0 ? escHtml(stickyChapterLabel(s.chapterId)) : t('Unplaced')}</div>
-      <textarea placeholder="${t('What needs doing here?')}" spellcheck="false"></textarea>
+      <textarea dir="auto" placeholder="${t('What needs doing here?')}" spellcheck="false"></textarea>
       <div class="s-actions"><button class="s-go">${t('Go to')}</button><span class="s-sep">·</span><button class="s-done">${t('Resolve')}</button></div>`;
     const ta = el.querySelector('textarea');
     ta.value = s.text;

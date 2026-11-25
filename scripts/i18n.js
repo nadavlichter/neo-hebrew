@@ -8,7 +8,7 @@
 //   node scripts/i18n.js check fr-CA   the same for a regional file, which
 //                                      only holds what differs from fr.json
 //
-// Strings are found in t('…'), tk('…') and NeoI18n.t('…') calls in the
+// Strings are found in t('…'), tk('…'), tBook('…') and NeoI18n.t('…') calls in the
 // JavaScript, and in the data-i18n* attributes of index.html. NEO Pocket's
 // own page and bridge count too: they show the same locales/ files.
 
@@ -40,7 +40,7 @@ function collect() {
     if (!keys.has(k)) keys.set(k, new Set());
     keys.get(k).add(f);
   };
-  const call = /(?<![\w$.])(?:NeoI18n\.)?tk?\(\s*'((?:[^'\\\n]|\\.)*)'/g;
+  const call = /(?<![\w$.])(?:NeoI18n\.)?(?:tk?|tBook)\(\s*'((?:[^'\\\n]|\\.)*)'/g;
   for (const f of JS_FILES) {
     const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
     for (const m of src.matchAll(call)) add(unescapeJs(m[1]), f);
@@ -62,39 +62,51 @@ function collect() {
 
 const readLocale = (code) => JSON.parse(fs.readFileSync(path.join(LOCALES, code + '.json'), 'utf8'));
 
-const [cmd, code] = process.argv.slice(2);
-const keys = collect();
+// A string, or a plural object keyed by Intl.PluralRules categories (Hebrew
+// has one, two and other), counts as translated when it has text, or "other".
+const isTranslated = (v) => !!(typeof v === 'string' ? v : v && typeof v === 'object' && v.other);
 
-if (cmd === 'template') {
-  const out = { _meta: { name: 'Language name in that language', translators: [] } };
-  for (const k of [...keys.keys()].sort((a, b) => a.localeCompare(b))) out[k] = '';
-  fs.writeFileSync(path.join(LOCALES, '_template.json'), JSON.stringify(out, null, 2) + '\n');
-  console.log(`locales/_template.json: ${keys.size} strings`);
-} else if (cmd === 'check' && code) {
-  // a regional file (fr-CA) only holds what differs from its base (fr)
-  const own = readLocale(code);
-  const baseCode = code.split('-')[0];
-  const regional = baseCode !== code;
-  const dict = regional ? { ...readLocale(baseCode), ...own } : own;
-  const missing = [...keys.keys()].filter((k) => {
-    const v = dict[k];
-    return !(typeof v === 'string' ? v : v && typeof v === 'object' && v.other);
+// Compare placeholder sets before joining: removing {n} from the joined
+// string left a trailing comma whenever it sorted last. A plural's one/two
+// forms may spell the number out, but every other variable is still required.
+const placeholderVars = (s, omitN = false) => [...new Set(String(s).match(/\{\w+\}/g) || [])]
+  .filter((v) => !omitN || v !== '{n}').sort().join(',');
+function placeholdersBroken(key, v) {
+  if (!v) return false;
+  const forms = typeof v === 'string' ? [['', v]] : Object.entries(v);
+  return forms.some(([form, text]) => {
+    const omitN = form === 'one' || form === 'two';
+    return placeholderVars(text, omitN) !== placeholderVars(key, omitN);
   });
-  const unused = Object.keys(own).filter((k) => k !== '_meta' && !keys.has(k));
-  // every {placeholder} of the English must survive the translation
-  const vars = (s) => (String(s).match(/\{\w+\}/g) || []).sort().join(',');
-  const broken = [...keys.keys()].filter((k) => {
-    const v = dict[k];
-    if (!v) return false;
-    const forms = typeof v === 'string' ? [v] : Object.values(v);
-    return forms.some((f) => vars(f).replace(/\{n\},?/g, '') !== vars(k).replace(/\{n\},?/g, ''));
-  });
-  console.log(`${code}: ${keys.size - missing.length}/${keys.size} translated` +
-    (regional ? ` (${Object.keys(own).length - 1} regional, the rest from ${baseCode}.json)` : ''));
-  if (missing.length) console.log('\nMissing:\n  ' + missing.join('\n  '));
-  if (broken.length) console.log('\nPlaceholders differ from the English:\n  ' + broken.join('\n  '));
-  if (unused.length) console.log('\nNo longer used:\n  ' + unused.join('\n  '));
-  process.exitCode = missing.length || broken.length ? 1 : 0;
+}
+
+if (require.main !== module) {
+  module.exports = { isTranslated, placeholdersBroken, placeholderVars };
 } else {
-  console.log('usage: node scripts/i18n.js template | check <code>');
+  const [cmd, code] = process.argv.slice(2);
+  const keys = collect();
+
+  if (cmd === 'template') {
+    const out = { _meta: { name: 'Language name in that language', translators: [] } };
+    for (const k of [...keys.keys()].sort((a, b) => a.localeCompare(b))) out[k] = '';
+    fs.writeFileSync(path.join(LOCALES, '_template.json'), JSON.stringify(out, null, 2) + '\n');
+    console.log(`locales/_template.json: ${keys.size} strings`);
+  } else if (cmd === 'check' && code) {
+    // a regional file (fr-CA) only holds what differs from its base (fr)
+    const own = readLocale(code);
+    const baseCode = code.split('-')[0];
+    const regional = baseCode !== code;
+    const dict = regional ? { ...readLocale(baseCode), ...own } : own;
+    const missing = [...keys.keys()].filter((k) => !isTranslated(dict[k]));
+    const unused = Object.keys(own).filter((k) => k !== '_meta' && !keys.has(k));
+    const broken = [...keys.keys()].filter((k) => placeholdersBroken(k, dict[k]));
+    console.log(`${code}: ${keys.size - missing.length}/${keys.size} translated` +
+      (regional ? ` (${Object.keys(own).length - 1} regional, the rest from ${baseCode}.json)` : ''));
+    if (missing.length) console.log('\nMissing:\n  ' + missing.join('\n  '));
+    if (broken.length) console.log('\nPlaceholders differ from the English:\n  ' + broken.join('\n  '));
+    if (unused.length) console.log('\nNo longer used:\n  ' + unused.join('\n  '));
+    process.exitCode = missing.length || broken.length ? 1 : 0;
+  } else {
+    console.log('usage: node scripts/i18n.js template | check <code>');
+  }
 }

@@ -61,7 +61,8 @@ function captureBody(body) {
   // (a page marks the lines that say who said it, and a chapter the speech
   // after a scene break, for the screen only)
   // (and a script's page breaks, (CONT'D) and suggestions)
-  return dropJunkSpans(body.innerHTML).replace(/<(b|i|em|strong|u|s|strike|sub|sup)\s+style="[^"]*"/g, '<$1').replace(/<p\b[^>]*>/g, (tag) => tag.replace(/ data-(?:attr|speech|first|walk|fnopen)=""/g, '')
+  const dir = bookDirection();
+  return dropJunkSpans(body.innerHTML).replace(/<(b|i|em|strong|u|s|strike|sub|sup)\s+style="[^"]*"/g, '<$1').replace(/<p\b[^>]*>/g, (tag) => savedParaDir(tag, dir).replace(/ data-(?:attr|speech|first|walk|fnopen)=""/g, '')
     .replace(/ data-(?:pg|fill|contd|ghost|ghost-empty|sp-paste|scene-note)(?:="[^"]*")?/g, ''));
 }
 
@@ -81,6 +82,25 @@ function dropJunkSpans(html) {
     junk.push(drop);
     return drop ? '' : tag;
   });
+}
+
+// A paragraph's direction is saved only where it differs from the book's (D2):
+// the page carries the book's direction, so writing dir on every paragraph
+// would rewrite every chapter of every book on first open and fight the sync.
+// The engine may leave `direction: rtl` in a paragraph's style after a join
+// or a paste; that is the same thing as dir, so it becomes dir first.
+function savedParaDir(tag, bookDir) {
+  if (!/\bdir=|direction\s*:/i.test(tag)) return tag;
+  let fromStyle = '';
+  tag = tag.replace(/\sstyle="([^"]*)"/, (m, css) => {
+    const d = /(?:^|;)\s*direction\s*:\s*(rtl|ltr)\s*(?=;|$)/i.exec(css);
+    if (!d) return m;
+    fromStyle = d[1].toLowerCase();
+    const rest = css.replace(/(^|;)\s*direction\s*:\s*(?:rtl|ltr)\s*(?=;|$)/i, '$1').replace(/^[\s;]+|[\s;]+$/g, '');
+    return rest ? ` style="${rest};"` : '';
+  });
+  if (fromStyle) tag = tag.replace(/\sdir="[^"]*"/, '').replace(/^<p\b/, `<p dir="${fromStyle}"`);
+  return tag.replace(` dir="${bookDir}"`, '');
 }
 
 // A chapter that opens on a line of dialogue sets no drop cap: the dash
@@ -379,7 +399,31 @@ function caretEdges(body) {
 // spans — so every block boundary and <br> becomes a paragraph break, and
 // styling that only lives in a style attribute is read as bold/italic.
 // dashes: { style, ...caretEdges } sets dialogue dashes, for the manuscript.
-function cleanPasteHtml(html, dashes) {
+// Pasted text loses the deprecated bidi embeddings and overrides (LRE RLE PDF LRO RLO);
+// the writer's marks (LRM, RLM, ALM) and the isolates stay.
+function dropEmbeddings(s) { return String(s || '').replace(/[\u202A-\u202E]/g, ''); }
+
+// The direction a pasted block says it has (7.3): a style's direction (which
+// wins over dir on the same element, as on screen), its own dir (Word writes
+// dir=RTL), or the nearest ancestor's (a Hebrew page's <div dir="rtl">,
+// <bdo>, <body dir>); '' when nothing says, or dir="auto".
+function pasteDirOf(el) {
+  for (let n = el; n && n.nodeType === 1; n = n.parentElement) {
+    const st = ((n.style && n.style.direction) || '').toLowerCase();
+    if (st === 'rtl' || st === 'ltr') return st;
+    const a = (n.getAttribute('dir') || '').trim().toLowerCase();
+    if (a === 'rtl' || a === 'ltr') return a;
+    if (a === 'auto') return '';
+  }
+  return '';
+}
+
+// target: { bookDir } for a page of the book (a chapter, Notes). Each pasted
+// paragraph then carries the direction its block had, else (when more than
+// one paragraph is pasted) its first strong letter, as dir only where it
+// differs from the book's (D2). Without a target nothing has a dir, as before.
+function cleanPasteHtml(html, dashes, target) {
+  html = dropEmbeddings(html);
   // parsed off to the side: nothing in a clipboard loads or runs
   const holder = new DOMParser().parseFromString(html, 'text/html').body;
   holder.querySelectorAll('script,style,meta,link,img,head,title').forEach((n) => n.remove());
@@ -403,18 +447,32 @@ function cleanPasteHtml(html, dashes) {
   // (a table's cells are paragraphs too: a letter or a sign set in a table
   // keeps its words)
   const blocks = 'p, div, li, h1, h2, h3, h4, h5, h6, blockquote, pre, section, article, header, footer, tr, td, th, dd, dt, caption';
+  // (with a target, each break is followed by the direction of the block it
+  // opens, or of the parent a block's end returns to: read before flattening)
+  const bookDir = target && target.bookDir;
+  const DIR_RTL = '\uE003'; const DIR_LTR = '\uE004';
+  const dirMark = (el) => {
+    const d = bookDir ? pasteDirOf(el) : '';
+    return d === 'rtl' ? DIR_RTL : d === 'ltr' ? DIR_LTR : '';
+  };
   holder.querySelectorAll(blocks).forEach((b) => {
-    b.before(document.createTextNode(BREAK));
-    b.after(document.createTextNode(BREAK));
+    b.before(document.createTextNode(BREAK + dirMark(b)));
+    b.after(document.createTextNode(BREAK + dirMark(b.parentElement)));
   });
-  holder.querySelectorAll('br').forEach((br) => br.replaceWith(document.createTextNode(BREAK)));
+  holder.querySelectorAll('br').forEach((br) => br.replaceWith(document.createTextNode(BREAK + dirMark(br.parentElement))));
 
   const paras = [[]];
+  const paraDirs = [''];
   for (const r of paraRuns(holder.innerHTML)) {
     if (r.mark !== undefined || r.fn !== undefined) { paras[paras.length - 1].push(r); continue; }
     const pieces = r.text.split(BREAK);
     pieces.forEach((text, i) => {
-      if (i > 0) paras.push([]);
+      if (i > 0) { paras.push([]); paraDirs.push(''); }
+      if (bookDir && /[\uE003\uE004]/.test(text)) {
+        const at = paraDirs.length - 1;
+        if (!paraDirs[at]) paraDirs[at] = text.match(/[\uE003\uE004]/)[0] === DIR_RTL ? 'rtl' : 'ltr';
+        text = text.replace(/[\uE003\uE004]/g, '');
+      }
       if (text) paras[paras.length - 1].push({ text, b: r.b, i: r.i, u: r.u, s: r.s });
     });
   }
@@ -450,11 +508,58 @@ function cleanPasteHtml(html, dashes) {
       if (!r.text) return '';
       return runHtml(r);
     }).join('');
-    return inner.replace(/<[^>]+>/g, '').trim() || inner.includes('class="fn"') ? '<p>' + inner + '</p>' : '';
+    if (!(inner.replace(/<[^>]+>/g, '').trim() || inner.includes('class="fn"'))) return null;
+    return { inner, dir: paraDirs[n], text: runs.map((r) => r.text || '').join('') };
   }).filter(Boolean);
-  // single block pastes inline (no forced new paragraph)
-  if (out.length === 1) return out[0].slice(3, -4);
-  return out.join('');
+  // single block pastes inline (no forced new paragraph): it takes the
+  // direction of the paragraph it lands in (see pasteHtmlInto)
+  if (out.length === 1) return out[0].inner;
+  return out.map((o) => {
+    const attr = bookDir ? NeoBidi.paraDirAttr(o.dir || NeoBidi.strongDir(o.text), bookDir) : null;
+    return (attr ? `<p dir="${attr}">` : '<p>') + o.inner + '</p>';
+  }).join('');
+}
+
+// The words of p outside the selection: what the paragraph holds besides
+// what a paste is about to replace
+function textOutsideSelection(p) {
+  const sel = window.getSelection();
+  if (!sel.rangeCount) return p.textContent;
+  const r = sel.getRangeAt(0);
+  if (!p.contains(r.startContainer) || !p.contains(r.endContainer)) return p.textContent;
+  const a = document.createRange(); a.selectNodeContents(p); a.setEnd(r.startContainer, r.startOffset);
+  const b = document.createRange(); b.selectNodeContents(p); b.setStart(r.endContainer, r.endOffset);
+  return a.toString() + b.toString();
+}
+
+// Paste cleaned HTML into a page of the book (a chapter body, Notes), keeping
+// direction (7.3). Several paragraphs carry their own (cleanPasteHtml). One
+// block lands inline and takes the paragraph's direction; if that paragraph
+// had no letter yet, the pasted text's first letter decides as typing does
+// (D4: English pasted into an empty RTL paragraph leaves it RTL, Hebrew into
+// an empty LTR one makes it RTL). Several paragraphs pasted into an empty one:
+// it takes the first pasted paragraph's direction, which the engine's merge
+// would otherwise drop. A script's lines have no dir. Returns whether a
+// paragraph's dir changed after the engine's input event (to save again).
+function pasteHtmlInto(body, html, dashes) {
+  const bookDir = book && !isScript() ? bookDirection() : null;
+  const p0 = bookDir ? focusParagraph(body) : null;
+  const bare = !!(p0 && p0.parentElement === body && !NeoBidi.strongDir(textOutsideSelection(p0)));
+  const clean = cleanPasteHtml(html, dashes, bookDir ? { bookDir } : undefined);
+  document.execCommand('insertHTML', false, clean);
+  if (!bare) return false;
+  if (!/^<p[\s>]/.test(clean)) {
+    const p = focusParagraph(body);
+    if (!p) return false;
+    const upTo = p.textContent.slice(0, caretOffsetIn(p));
+    return firstLetterDir(body, upTo);
+  }
+  if (!p0.isConnected || p0.parentElement !== body || !p0.textContent) return false;
+  const want = (/^<p dir="(rtl|ltr)"/.exec(clean) || [])[1] || bookDir;
+  if ((p0.getAttribute('dir') || bookDir) === want) return false;
+  const attr = NeoBidi.paraDirAttr(want, bookDir);
+  if (attr) p0.setAttribute('dir', attr); else p0.removeAttribute('dir');
+  return true;
 }
 
 // Em dash, ellipsis, smart quotes:
@@ -576,6 +681,16 @@ function markdownEmphasis(e, body, range) {
   for (const cmd of cmds) if (document.queryCommandState(cmd)) document.execCommand(cmd);
   mdJustSet = { steps, key: e.key, block, end };
   return true;
+}
+// The Latin letter a key stands for. On a Hebrew (or any non-Latin) layout
+// e.key is that layout's letter, so a shortcut that asks for 'z' looks at the
+// physical key instead. An English layout's e.key comes back unchanged.
+function latinKey(e) {
+  const k = e.key;
+  if (typeof k !== 'string' || [...k].length !== 1 || k.charCodeAt(0) < 128) return k;
+  const m = /^Key([A-Z])$/.exec(e.code || '');
+  if (!m) return k;
+  return e.shiftKey ? m[1] : m[1].toLowerCase();
 }
 // a key pressed on its own on the way to a shortcut
 const MODIFIER_KEYS = new Set(['Meta', 'Control', 'Shift', 'Alt', 'AltGraph', 'CapsLock', 'OS']);
@@ -704,7 +819,7 @@ function autoCapKey(e, body) {
     if (e.repeat) return;
     if (capPending && !MODIFIER_KEYS.has(e.key)) capPendingResolve(body);
   }
-  if (e.key.length !== 1 || !body.matches('.chapter-body')) return;
+  if (e.key.length !== 1 || !body.matches('.chapter-body') || hebrewWriting()) return;
   const sel = window.getSelection();
   if (!sel.rangeCount || !sel.getRangeAt(0).collapsed) return;
   const range = sel.getRangeAt(0);
@@ -755,10 +870,58 @@ document.addEventListener('keydown', (e) => {
   selectChars(just.block, caret, caret);
 }, true);
 
+let hebrewQuotePending = null;
+let hebrewQuoteJustSet = null;
+function hebrewQuoteContext(body, range) {
+  if (isScript() || !range.collapsed || !body.isContentEditable) return null;
+  let el = range.startContainer;
+  if (el.nodeType === Node.TEXT_NODE) el = el.parentElement;
+  let block = el && el.closest ? el.closest('p, div, li') : null;
+  if (!block || !body.contains(block)) block = body;
+  const pre = document.createRange();
+  pre.selectNodeContents(block);
+  try { pre.setEnd(range.startContainer, range.startOffset); } catch { return null; }
+  return { body, block, before: pre.toString() };
+}
+// A double-quote key after a Hebrew letter remains a quotation until the next
+// letter proves it is inside an acronym. The displayed quote is remembered,
+// so a deliberately typed curly mark or pasted text is never guessed at.
+function finishHebrewWordQuote(e, body) {
+  const pending = hebrewQuotePending;
+  hebrewQuotePending = null;
+  if (!pending || e.metaKey || e.ctrlKey || e.altKey || e.isComposing || e.keyCode === 229) return;
+  const sel = window.getSelection();
+  if (!sel.rangeCount) return;
+  const ctx = hebrewQuoteContext(body, sel.getRangeAt(0));
+  if (!ctx || ctx.block !== pending.block || ctx.before.length !== pending.at + pending.shown.length || ctx.before.slice(pending.at) !== pending.shown) return;
+  const mark = hebrewWordMark(ctx.before.slice(0, pending.at), pending.key, e.key);
+  if (!mark) return;
+  selectChars(ctx.block, pending.at, pending.at + pending.shown.length);
+  document.execCommand('insertText', false, mark);
+  hebrewQuoteJustSet = { ...ctx, at: pending.at, to: mark, was: pending.key, tail: e.key };
+}
+// As with automatic capitals/dashes, immediate undo keeps the writer's mark.
+document.addEventListener('keydown', (e) => {
+  if (MODIFIER_KEYS.has(e.key)) return;
+  const just = hebrewQuoteJustSet;
+  hebrewQuoteJustSet = null;
+  if (!just || !(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey || e.code !== 'KeyZ' || !just.block.isConnected || document.activeElement !== just.body) return;
+  const sel = window.getSelection();
+  const ctx = sel.rangeCount && hebrewQuoteContext(just.body, sel.getRangeAt(0));
+  if (!ctx || ctx.block !== just.block || ctx.before.length !== just.at + just.to.length + just.tail.length || ctx.before.slice(just.at) !== just.to + just.tail) return;
+  e.preventDefault();
+  e.stopPropagation();
+  hebrewQuotePending = null;
+  selectChars(just.block, just.at, just.at + just.to.length);
+  document.execCommand('insertText', false, just.was);
+  selectChars(just.block, just.at + just.was.length + just.tail.length, just.at + just.was.length + just.tail.length);
+}, true);
+
 function smartKeys(e, body) {
   // a field can reach smartKeys twice (its own handler and the page-wide
   // one below): the first pass wins
   if (e.defaultPrevented) return;
+  finishHebrewWordQuote(e, body);
   if (litrpgKey(e, body)) return;
   dialogueDashKey(e, body);
   autoCapKey(e, body);
@@ -814,9 +977,16 @@ function smartKeys(e, body) {
   if (e.key === '"' || e.key === "'") {
     e.preventDefault();
     const double = e.key === '"';
-    const ch = typedQuote(e.key, prevChars(8), double ? bookQuotes(body) : null, double ? null : singleQuotes(body),
+    const ctx = hebrewQuoteContext(body, range);
+    const single = double ? null : singleQuotes(body);
+    const wordMark = ctx && !double && !(single && quoteIsOpen(range, single)) ? hebrewWordMark(ctx.before, e.key) : '';
+    const ch = wordMark || typedQuote(e.key, hebrewWriting() && ctx ? ctx.before.slice(-8) : prevChars(8), double ? bookQuotes(body) : null, single,
       (q, straight) => quoteIsOpen(range, q, straight));
     document.execCommand('insertText', false, ch);
+    if (ctx && hebrewBefore(ctx.before)) {
+      if (wordMark) hebrewQuoteJustSet = { ...ctx, at: ctx.before.length, to: ch, was: e.key, tail: '' };
+      else hebrewQuotePending = { block: ctx.block, at: ctx.before.length, shown: ch, key: e.key };
+    }
   }
 }
 
@@ -872,6 +1042,20 @@ function typedQuote(key, before, q, sq, isOpen) {
   if (sq.close !== '’' && isOpen(sq, '')) return sq.close;
   return '’';
 }
+// Hebrew abbreviation marks depend on adjacent Hebrew letters, not on the
+// interface or spellcheck language. Combining vowel points stay with a letter.
+function hebrewLetter(ch) {
+  return /^\p{Script=Hebrew}$/u.test(ch) && /^\p{L}$/u.test(ch);
+}
+function hebrewBefore(text) {
+  return hebrewLetter(text.replace(/\p{M}+$/u, '').slice(-1));
+}
+function hebrewWordMark(before, key, next = '') {
+  if (!hebrewBefore(before)) return '';
+  if (key === "'" && (!next || hebrewLetter(next))) return '׳';
+  if (key === '"' && hebrewLetter(next)) return '״';
+  return '';
+}
 // Does a quote typed after this text open one? At the start, after a space
 // or a bracket, or after an opening mark (»› and „‚ nest), it does. But
 // ‘ “ « » › ‹ open in some languages and close in others: German »…›…‹«
@@ -911,6 +1095,7 @@ function quoteRuns(runs, q, sq, before = '') {
 // language when one is set, otherwise NEO's own language.
 const QUOTE_STYLES = {
   en: { open: '“', close: '”', singles: true },
+  he: { open: '“', close: '”', singles: true },
   nl: { open: '“', close: '”', singles: true },
   pt: { open: '“', close: '”', singles: true },          // Brazil
   'pt-PT': { open: '«', close: '»' },
@@ -934,6 +1119,7 @@ const QUOTE_STYLES = {
 // Elsewhere ' is an apostrophe only.
 function singleQuotes(el) {
   const q = quoteStyle();
+  if (hebrewWriting() && bookQuotes(el).open === '„') return { open: '‚', close: '’' };
   if (q.singles) return { open: '‘', close: '’' };
   if (!writingLanguage().toLowerCase().startsWith('de')) return null;
   const d = bookQuotes(el).open.trim();
@@ -941,8 +1127,30 @@ function singleQuotes(el) {
   if (d === '«') return { open: '‹', close: '›' };
   return { open: '‚', close: '‘' };
 }
+// The language the book is written in: its own setting, else the spellcheck
+// language, else the interface's. A book with no language of its own (every
+// book before Hebrew) answers as it always did. On the shelf there is no book.
 function writingLanguage() {
-  return (library && library.spellLanguage) || NeoI18n.getLocale();
+  return (book && typeof book.language === 'string' && book.language) || (library && library.spellLanguage) || NeoI18n.getLocale();
+}
+// The book's own language, never the interface's: an English book with no
+// language set, opened in a Hebrew interface, keeps its automatic capitals.
+// A right-to-left book with no language is Hebrew writing.
+function hebrewWriting() {
+  if (book && typeof book.language === 'string' && book.language) return /^(?:he|iw)(?:[-_]|$)/i.test(book.language);
+  if (book && book.direction === 'rtl') return true;
+  return /^(?:he|iw)(?:[-_]|$)/i.test((library && library.spellLanguage) || '');
+}
+// Opening marks before a word identify the style already used in Hebrew prose.
+// Only complete pairs count; marks inside acronyms are not style evidence.
+function hebrewBookQuotes(text) {
+  let best = null, count = 0;
+  for (const [open, close] of [['“', '”'], ['„', '”'], ['„', '“'], ['”', '”']]) {
+    const re = new RegExp(`(?<![\\p{L}\\p{M}\\p{N}])${open}(?=[\\p{L}\\p{N}])[^“„”\\n]*${close}`, 'gu');
+    const n = (text.match(re) || []).length;
+    if (n > count) { best = { open, close }; count = n; }
+  }
+  return best;
 }
 function quoteStyle() {
   const code = writingLanguage();
@@ -964,6 +1172,12 @@ function bookQuotes(el) {
   // paragraph by paragraph: one ending in » and the next starting with a
   // letter don't make an opening »
   const text = !body ? '' : body.children ? [...body.children].map((p) => p.textContent).join('\n') : body.textContent;
+  if (hebrewWriting()) {
+    const local = body || (el && el.closest ? el.closest('#aux-editor') : null);
+    const own = hebrewBookQuotes(local ? local.textContent : '');
+    const elsewhere = !own && book ? hebrewBookQuotes(book.chapterOrder.map((id) => (chapterHTML[id] || '').replace(/<[^>]*>/g, '')).join('\n')) : null;
+    if (own || elsewhere) return own || elsewhere;
+  }
   let c = opens(text);
   if (!c['»'] && !c['«'] && !c['„'] && !c.own && book) c = opens(book.chapterOrder.map((id) => chapterHTML[id] || '').join(' '));
   // a German or Danish book already written in „…“ keeps its marks
@@ -1055,7 +1269,7 @@ window.addEventListener('keydown', (e) => {
   if ($('#editor-view').hidden || document.querySelector('.modal-backdrop:not([hidden])')) return;
   e.preventDefault();
   e.stopPropagation();
-  const step = e.key === 'ArrowRight' ? 1 : TAB_ORDER.length - 1;
+  const step = e.key === nextKey() ? 1 : TAB_ORDER.length - 1;
   goToTab(TAB_ORDER[(TAB_ORDER.indexOf(currentTab) + step) % TAB_ORDER.length]);
 }, true);
 

@@ -314,7 +314,7 @@ function worthKeeping(bookId, chId, disk, mine) {
 // since been closed too, straight on disk.
 function twinChapterTitle(title) {
   const when = new Date().toLocaleTimeString(NeoI18n.getLocale(), { hour: 'numeric', minute: '2-digit' });
-  return ((title || '') + ' ' + t('from other device, {time}', { time: when })).trim();
+  return ((title || '') + ' ' + plain(t('from other device, {time}', { time: when }))).trim();
 }
 async function keepOtherDeviceVersion(bookId, chId, disk) {
   const twinId = 'ch-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
@@ -1254,6 +1254,8 @@ async function refreshFromDisk() {
           const removed = [...new Set([...myRemoved, ...theirRemoved])].filter((c) => !order.includes(c));
           if (removed.length) book.removedChapters = removed; else delete book.removedChapters;
         } else {
+          const dirWas = book.direction;
+          const langWas = book.language;
           const was = book;
           book = { ...meta, chapterOrder: order, lastPosition: book.lastPosition, dailyCounts: book.dailyCounts };
           // a chapter kept keeps its name, its kind and its notes
@@ -1268,6 +1270,8 @@ async function refreshFromDisk() {
             if (!book.removedChapters.length) delete book.removedChapters;
           }
           savedMetaSig = metaSig(meta);
+          // a direction or language set on the other device reaches this page too
+          if (book.direction !== dirWas || book.language !== langWas) applyBookDir();
           savedOrder = [...meta.chapterOrder];
         }
         if (metaSig(book) !== savedMetaSig) scheduleMetaSave();
@@ -1425,6 +1429,8 @@ async function backToShelf() {
   flushAllSaves();
   tabPlaces = {};
   book = null;
+  bookWords = null;
+  applyBookDir();
   showWindowTitle();
   forgetSnapshots();
   sideCardsKey = '';

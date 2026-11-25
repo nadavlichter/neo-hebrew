@@ -30,6 +30,96 @@ function keepTypingStyle(doc, move) {
 }
 // ---- end of typing style rules ----
 
+// ---- automatic paragraph direction (D4) ----
+// When the first strong letter is typed into a paragraph (digits, quotes and
+// spaces never decide), the paragraph takes that letter's direction: its dir
+// is set, or removed where that is the book's own (D2). A paragraph that
+// already has a letter before the caret is never flipped by typing. An RTL
+// paragraph also keeps its direction when its opening word is English. This runs
+// from typed insertText/insertReplacementText and from compositionend (an input
+// method's text lands in pieces, and the page is left alone while it
+// composes); never for a paste or a drop (their own paths), a script, a gray
+// note or a scene break. It is a plain attribute on the paragraph, so the
+// existing input → captureBody → save path carries it: captureBody drops it
+// where it equals the book's. The engine's undo knows nothing of attributes,
+// so ⌘Z of the first letter leaves an empty paragraph with a stale dir, which
+// dropEmptyParaDir clears on the same input. Deleting a paragraph's words
+// leaves its dir alone (the first letter typed next decides anyway), so ⌘Z
+// of the deletion brings the words back in the direction they had.
+// The first letter of a book with no direction that holds no letter yet, if
+// it is right to left, sets the book instead (3.8), and the paragraph then
+// needs no dir. Returns whether anything changed.
+function firstLetterDir(body, data) {
+  if (!book || typeof data !== 'string' || !data) return false;
+  if (isScript()) return scriptFirstLetter(body, data);
+  const p = focusParagraph(body);
+  if (!p || p.parentElement !== body || p.matches('.ghost, .scene-break')) return false;
+  const text = p.textContent;
+  const at = caretOffsetIn(p);
+  if (at < data.length || text.slice(at - data.length, at) !== data) return false;
+  const before = text.slice(0, at - data.length);
+  const dir = NeoBidi.autoDir(before, data, getComputedStyle(p).direction);
+  if (!dir) return false;
+  let changed = false;
+  if (dir === 'rtl' && book.direction === undefined && body.matches('.chapter-body')) {
+    const mine = body.closest('.chapter').dataset.id;
+    const texts = [before + text.slice(at)];
+    for (const c of body.children) if (c !== p) texts.push(c.textContent);
+    for (const id of book.chapterOrder) if (id !== mine) texts.push(htmlLetters(chapterHTML[id]));
+    const set = NeoBidi.bookFromFirstLetter(book, data, texts);
+    if (set) { Object.assign(book, set); applyBookDir(); scheduleMetaSave(); changed = true; }
+  }
+  const now = p.getAttribute('dir') || bookDirection();
+  if (dir !== now) {
+    const attr = NeoBidi.paraDirAttr(dir, bookDirection());
+    if (attr) p.setAttribute('dir', attr); else p.removeAttribute('dir');
+    changed = true;
+  }
+  return changed;
+}
+// A script's lines carry no dir of their own (its elements are placed by the
+// script's direction), but the first letter typed into a script with no
+// letters and no direction, if it is right to left, mirrors the script (3.8).
+function scriptFirstLetter(body, data) {
+  if (book.direction !== undefined || NeoBidi.strongDir(data) !== 'rtl' || !body.matches('.chapter-body')) return false;
+  const p = focusParagraph(body);
+  if (!p || p.parentElement !== body) return false;
+  const text = p.textContent;
+  const at = caretOffsetIn(p);
+  if (at < data.length || text.slice(at - data.length, at) !== data) return false;
+  const texts = [text.slice(0, at - data.length) + text.slice(at)];
+  for (const c of body.children) if (c !== p) texts.push(c.textContent);
+  const set = NeoBidi.bookFromFirstLetter(book, data, texts);
+  if (!set) return false;
+  Object.assign(book, set);
+  applyBookDir();
+  scheduleMetaSave();
+  spSchedule();
+  return true;
+}
+// a paragraph emptied by undo (⌘Z of its first letter) forgets its direction, so the
+// next first letter decides afresh. Enter is not a deletion: the new line
+// keeps the one above's dir, as in Word, until a letter is typed in it.
+function dropEmptyParaDir(body) {
+  if (isScript()) return;
+  const p = focusParagraph(body);
+  if (p && p.parentElement === body && p.hasAttribute('dir') && p.textContent === '') p.removeAttribute('dir');
+}
+
+// Some mobile keyboards finish composition with empty event.data. Remember
+// its logical start, so only the committed span can decide direction; the
+// earlier words of a paragraph must never be mistaken for a new first letter.
+function dirCompositionAt(body) {
+  const p = focusParagraph(body);
+  return { p, at: p ? caretOffsetIn(p) : 0 };
+}
+function finishCompositionDir(body, data, start) {
+  const p = focusParagraph(body);
+  const committed = typeof data === 'string' && data ? data
+    : start && p && p === start.p ? p.textContent.slice(start.at, caretOffsetIn(p)) : '';
+  return firstLetterDir(body, committed);
+}
+
 function wireChapterBody(body, chId) {
   body.addEventListener('focus', () => { currentChapterId = chId; updateCounters(); highlightNav(); });
 
@@ -51,9 +141,14 @@ function wireChapterBody(body, chId) {
       if (keepTypingStyle(document, () => sel.collapse(sel.anchorNode, sel.anchorOffset)).length) sc.scrollTop = keep;
     }, 1000);
   };
-  body.addEventListener('input', () => {
+  let pasting = 0;
+  body.addEventListener('input', (e) => {
     sealUndoOnEdit(); // chapterHTML is still the text from before this edit
     breakRun = 0; // fresh typing: ⌘Z belongs to the engine again
+    // before the capture below, so the paragraph's dir is part of what is saved
+    const kind = e.inputType || '';
+    if ((kind === 'insertText' || kind === 'insertReplacementText') && !composing && !e.isComposing && !pasting) firstLetterDir(body, e.data);
+    else if (kind.startsWith('history')) dropEmptyParaDir(body);
     if (isScript()) scriptInput(body);
     markDialogueOpening(body);
     chapterHTML[chId] = captureBody(body);
@@ -92,6 +187,10 @@ function wireChapterBody(body, chId) {
     insertClip(e.dataTransfer);
   });
   function insertClip(data) {
+    pasting++; // the input events of a paste are not typing: pasteHtmlInto and the text branch decide direction (7.3)
+    try { insertClipIn(data); } finally { pasting--; }
+  }
+  function insertClipIn(data) {
     writeOverGhost(); // pasted words over a gray note are prose, like typed ones
     const html = data.getData('text/html');
     const text = data.getData('text/plain');
@@ -107,19 +206,35 @@ function wireChapterBody(body, chId) {
     const edges = caretEdges(body);
     const quotes = isScript() ? null : { q: bookQuotes(body), sq: singleQuotes(body) };
     if (html) {
-      document.execCommand('insertHTML', false, cleanPasteHtml(html, { style: dashStyle(), quotes, ...edges }));
+      const dirChanged = pasteHtmlInto(body, html, { style: dashStyle(), quotes, ...edges });
       // the engine wraps inserted HTML (and its neighbours) in style spans
       if (body.querySelector('span:not(.ph-mark):not(.fn)')) {
         const caret = captureCaret();
         stripJunkSpans(body);
         restoreCaret(caret);
         syncChapter(body, chId); // what's saved is the cleaned paragraph
-      }
+      } else if (dirChanged) syncChapter(body, chId);
       reconcileMarks();
     } else if (text) {
       const parts = text.replace(/\r/g, '').split(/\n+/).filter((p) => p.trim());
+      // direction (7.3): with several lines each paragraph takes its first
+      // strong letter (dir only where it differs from the book's); one line
+      // lands in its paragraph, which an empty one lets decide as typing does
+      const bookDir = !isScript() ? bookDirection() : null;
+      const p0 = bookDir ? focusParagraph(body) : null;
+      const bare = !!(p0 && p0.parentElement === body && !NeoBidi.strongDir(textOutsideSelection(p0)));
+      let dirChanged = false;
+      const lineDir = (p, line) => {
+        if (!p || p.parentElement !== body) return;
+        const want = NeoBidi.strongDir(line) || bookDir;
+        if ((p.getAttribute('dir') || bookDir) === want) return;
+        const attr = NeoBidi.paraDirAttr(want, bookDir);
+        if (attr) p.setAttribute('dir', attr); else p.removeAttribute('dir');
+        dirChanged = true;
+      };
       parts.forEach((p, i) => {
         if (i > 0) document.execCommand('insertParagraph');
+        if (bookDir && parts.length > 1 && (i > 0 || bare)) lineDir(focusParagraph(body), p);
         // the clipboard's own space at either end stays when the paste lands
         // mid-line ("the " + "big " + "dog"), and goes at a paragraph's edge
         const lead = i === 0 && !edges.start && !edges.spaced && /^\s/.test(p) ? ' ' : '';
@@ -133,12 +248,21 @@ function wireChapterBody(body, chId) {
           stripJunkSpans(body); // the engine wraps inserted HTML in style spans
         } else document.execCommand('insertText', false, line);
       });
+      if (bookDir && parts.length === 1 && bare) {
+        const p = focusParagraph(body);
+        if (p && firstLetterDir(body, p.textContent.slice(0, caretOffsetIn(p)))) dirChanged = true;
+      }
+      if (dirChanged) syncChapter(body, chId);
     }
   }
   // While macOS composes input, shortcuts stand down completely.
-  let composing = false;
-  body.addEventListener('compositionstart', () => { composing = true; });
-  body.addEventListener('compositionend', () => { composing = false; });
+  let composing = false, dirComposition = null;
+  body.addEventListener('compositionstart', () => { composing = true; dirComposition = dirCompositionAt(body); });
+  body.addEventListener('compositionend', (e) => {
+    composing = false;
+    if (finishCompositionDir(body, e.data, dirComposition)) syncChapter(body, chId);
+    dirComposition = null;
+  });
   // An Android keyboard (the phone's own, or a Bluetooth one through it) hands
   // the page its characters as input, not as keys: keydown says keyCode 229
   // and no key, so the rules for quotes, dashes and capitals never saw them

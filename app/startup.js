@@ -51,9 +51,9 @@ function installLinuxBodyFonts() {
       value: stack, enumerable: false, writable: true, configurable: true
     });
   }
-  DROPCAP_FONTS.literary = '"Libre Bodoni", "Didot", "Bodoni 72", Georgia, serif';
-  DROPCAP_FONTS.fantasy = '"TeX Gyre Chorus", "Apple Chancery", "Snell Roundhand", cursive';
-  DROPCAP_FONTS.scifi = '"Jost", Futura, "Avenir Next", "Helvetica Neue", sans-serif';
+  DROPCAP_FONTS.literary = '"NEO Hebrew Serif", "Libre Bodoni", "Didot", "Bodoni 72", Georgia, serif';
+  DROPCAP_FONTS.fantasy = '"NEO Hebrew Fantasy", "TeX Gyre Chorus", "Apple Chancery", "Snell Roundhand", cursive';
+  DROPCAP_FONTS.scifi = '"NEO Hebrew Sans", "Jost", Futura, "Avenir Next", "Helvetica Neue", sans-serif';
   // A shared choice list, when the renderer defines one, has to name these
   // bundled faces on Linux rather than fonts the machine does not have.
   if (typeof BODY_FONT_CHOICES !== 'undefined') {
@@ -104,7 +104,7 @@ $$('.tab').forEach((tab, i, all) => {
     if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); tab.click(); }
     if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
       e.preventDefault();
-      all[(i + (e.key === 'ArrowRight' ? 1 : all.length - 1)) % all.length].focus();
+      all[(i + (e.key === nextKey() ? 1 : all.length - 1)) % all.length].focus();
     }
   });
 });

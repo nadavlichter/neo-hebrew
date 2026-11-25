@@ -21,14 +21,42 @@
 //     wordsText,            "about 90,000 words", already in the writer's language
 //     byText,               "by Pen Name"
 //     endText,              "END", or '' for none
-//     font: 'times' | 'courier', paper: 'Letter' | 'A4', lang: 'en-US',
+//     font: 'times' | 'courier', paper: 'Letter' | 'A4', lang: 'en-US', dir: 'ltr' | 'rtl',
 //     short: true when it's one story with no chapters,
 //     sections: [{ kind: 'chapter' | 'part' | 'epigraph', heading, partTitle,
-//                  paras: [{ sceneBreak, blank, poetry, flush, litrpg, align,
+//                  paras: [{ sceneBreak, blank, poetry, flush, litrpg, align, dir, // only stored exceptions
 //                            runs: [{ text, b, i, u, s, br } | { fn: note }] }] }]
 //   }
 
 (function (root) {
+  const Bidi = typeof module === 'object' && module.exports ? require('./bidi.js') : root.NeoBidi;
+  const hasRtl = (s) => [...String(s || '')].some((ch) => Bidi.charDir(ch) === 'rtl');
+  const bidiLang = (s) => /^[a-z]{2,3}-[a-z]{2}$/i.test(s || '') ? s : ({ he: 'he-IL', iw: 'he-IL', yi: 'yi-001', ar: 'ar-SA', fa: 'fa-IR', ur: 'ur-PK' }[String(s || '').split(/[-_]/)[0]] || 'he-IL');
+  let wordModel = null;
+  // Match the ordinary Word export: neutrals stay with the preceding letter's run.
+  function scriptRuns(runs, dir) {
+    const text = runs.map((r) => r.text || '').join('');
+    let first = '';
+    for (const ch of text) { first = Bidi.charDir(ch); if (first) break; }
+    let last = first || dir;
+    const out = [];
+    for (const r of runs) {
+      if (r.br || r.tab || r.fn !== undefined || !r.text) { out.push(r); continue; }
+      let current = null;
+      for (const ch of r.text) {
+        const next = Bidi.charDir(ch) || last;
+        last = next;
+        if (current && current.dir === next) current.text += ch;
+        else { current = { ...r, text: ch, dir: next }; out.push(current); }
+      }
+    }
+    return out;
+  }
+  function alignment(value, dir) {
+    if (value === 'center') return 'center';
+    if (dir === 'rtl') return value === 'left' || value === 'end' ? 'left' : '';
+    return value === 'right' || value === 'end' ? 'right' : '';
+  }
   const FONTS = {
     times: { docx: 'Times New Roman', css: '"Times New Roman", Tinos, "Liberation Serif", Times, serif' },
     courier: { docx: 'Courier New', css: '"Courier Prime", "Courier New", Cousine, "Liberation Mono", Courier, monospace' }
@@ -72,17 +100,19 @@
 
   // the footnotes met while the story is set (docxEntries), numbered in order
   let notes = null;
-  function runsXml(runs) {
-    return (runs || []).map((r) => {
+  function runsXml(runs, dir = (wordModel && wordModel.dir) || 'ltr') {
+    runs = runs || [];
+    const complex = dir === 'rtl' || hasRtl(runs.map((r) => r.text || '').join(''));
+    return (complex ? scriptRuns(runs, dir) : runs).map((r) => {
       if (r.br) return '<w:r><w:br/></w:r>';
       if (r.fn !== undefined) {
         if (!notes) return '';
-        notes.push(r.fn);
+        notes.push(r.fnDir ? { text: r.fn, dir: r.fnDir } : r.fn);
         return `<w:r><w:rPr><w:rStyle w:val="FootnoteReference"/></w:rPr><w:footnoteReference w:id="${notes.length}"/></w:r>`;
       }
       if (r.tab) return '<w:r><w:tab/></w:r>';
       const style = r.b && r.i ? 'StrongEmphasis' : r.b ? 'Strong' : r.i ? 'Emphasis' : '';
-      const rPr = (style ? `<w:rStyle w:val="${style}"/>` : '') + (r.s ? '<w:strike/>' : '') + (r.u ? '<w:u w:val="single"/>' : '');
+      const rPr = (style ? `<w:rStyle w:val="${style}"/>` : '') + (r.s ? '<w:strike/>' : '') + (r.dir === 'rtl' ? '<w:szCs w:val="24"/>' : '') + (r.u ? '<w:u w:val="single"/>' : '') + (r.dir === 'rtl' ? '<w:rtl/>' : '');
       return `<w:r>${rPr ? '<w:rPr>' + rPr + '</w:rPr>' : ''}<w:t xml:space="preserve">${escXml(r.text)}</w:t></w:r>`;
     }).join('');
   }
@@ -92,14 +122,16 @@
     if (o.style) pPr.push(`<w:pStyle w:val="${o.style}"/>`);
     if (o.keepNext) pPr.push('<w:keepNext/>');
     if (o.pageBreak) pPr.push('<w:pageBreakBefore/>');
+    const dir = (wordModel && wordModel.dir) || 'ltr';
     if (o.tabs) pPr.push(`<w:tabs>${o.tabs}</w:tabs>`);
+    if (o.dir && o.dir !== dir) pPr.push(o.dir === 'rtl' ? '<w:bidi/>' : '<w:bidi w:val="0"/>');
     if (o.before != null || o.after != null || o.line != null) {
       pPr.push(`<w:spacing${o.before != null ? ` w:before="${o.before}"` : ''}${o.after != null ? ` w:after="${o.after}"` : ''}${o.line != null ? ` w:line="${o.line}" w:lineRule="auto"` : ''}/>`);
     }
     if (o.ind) pPr.push(o.ind);
     if (o.align) pPr.push(`<w:jc w:val="${o.align}"/>`);
     if (o.sectPr) pPr.push(o.sectPr);
-    return `<w:p>${pPr.length ? '<w:pPr>' + pPr.join('') + '</w:pPr>' : ''}${runsXml(runs)}</w:p>`;
+    return `<w:p>${pPr.length ? '<w:pPr>' + pPr.join('') + '</w:pPr>' : ''}${runsXml(runs, o.dir || dir)}</w:p>`;
   }
   const plainRun = (text) => [{ text }];
 
@@ -115,7 +147,15 @@
       + `<w:pgMar w:top="${TWIP}" w:right="${TWIP}" w:bottom="${TWIP}" w:left="${TWIP}" w:header="${TWIP / 2}" w:footer="${TWIP / 2}" w:gutter="0"/>`
       + (restart ? '<w:pgNumType w:start="1"/>' : '')
       + (titlePg ? '<w:titlePg/>' : '')
+      + (m.dir === 'rtl' ? '<w:bidi/>' : '')
       + '</w:sectPr>';
+  }
+
+  // Contact fields are structured data: phone/email/Latin address lines keep
+  // their reading order while the block stays on the manuscript's right.
+  function contactDir(line, m) {
+    const dir = Bidi.strongDir(line);
+    return m.dir === 'rtl' && (dir === 'ltr' || (!dir && /\d/.test(line))) ? 'ltr' : '';
   }
 
   // The title page's lines: the contact block single-spaced at the top
@@ -126,9 +166,10 @@
     const right = pp.w - 2 * TWIP;
     const lines = [m.contact && m.contact.name, ...((m.contact && m.contact.lines) || [])].map((x) => String(x || '').trim()).filter(Boolean);
     if (!lines.length) lines.push('');
+    // RTL tab-stop mirroring follows Word's bidi paragraph convention; verify in real Word.
     const out = lines.map((line, i) => (i === 0
-      ? p([{ text: line }, { tab: true }, { text: m.wordsText || '' }], { style: 'Contact', tabs: `<w:tab w:val="right" w:pos="${right}"/>` })
-      : p(plainRun(line), { style: 'Contact' })));
+      ? p([{ text: line }, { tab: true }, { text: m.wordsText || '' }], { style: 'Contact', tabs: `<w:tab w:val="${m.dir === 'rtl' ? 'left' : 'right'}" w:pos="${right}"/>` })
+      : p(plainRun(line), { style: 'Contact', dir: contactDir(line, m), align: contactDir(line, m) ? 'right' : '' })));
     // about halfway down the page: what's left of the top half after the contact lines
     const before = Math.max(TWIP, Math.round((pp.h / 2 - TWIP) - lines.length * 240 - 2 * DOUBLE));
     out.push(p(plainRun(m.title || ''), { style: 'ManuscriptTitle', before }));
@@ -148,9 +189,9 @@
       if (sec.kind === 'part') {
         out.push(p(plainRun(sec.heading || ''), { style: 'PartHeading', pageBreak: brk, before: third }));
         if (sec.partTitle) out.push(p(plainRun(sec.partTitle), { style: 'PartHeading' }));
-        for (const x of sec.paras || []) if (!x.sceneBreak) out.push(p(x.runs, { style: 'Centered' }));
+        for (const x of sec.paras || []) if (!x.sceneBreak) out.push(p(x.runs, { style: 'Centered', dir: x.dir }));
       } else if (sec.kind === 'epigraph') {
-        (sec.paras || []).forEach((x, i) => { if (!x.sceneBreak) out.push(p(x.runs, { style: 'Centered', pageBreak: brk && i === 0, before: i === 0 ? third : null })); });
+        (sec.paras || []).forEach((x, i) => { if (!x.sceneBreak) out.push(p(x.runs, { style: 'Centered', pageBreak: brk && i === 0, before: i === 0 ? third : null, dir: x.dir })); });
       } else {
         if (sec.heading) out.push(p(plainRun(sec.heading), { style: 'ChapterHeading', pageBreak: brk, before: third }));
         // an untitled chapter's first line starts its page (no empty line above it)
@@ -165,13 +206,15 @@
           if (x.litrpg) {
             const top = !(paras[i - 1] && paras[i - 1].litrpg);
             const end = !(paras[i + 1] && paras[i + 1].litrpg);
-            out.push(p(x.runs, { style: 'LitRPG', keepNext: !end, pageBreak, before: top ? 240 : 0, after: end ? 240 : 0 }));
+            out.push(p(x.runs, { style: 'LitRPG', keepNext: !end, pageBreak, before: top ? 240 : 0, after: end ? 240 : 0, dir: x.dir }));
             return;
           }
-          if (x.sceneBreak) out.push(p(plainRun('#'), { style: 'SceneBreak', pageBreak }));
-          else if (x.poetry) out.push(p(x.runs, { style: 'Poetry', pageBreak, align: x.align === 'center' || x.align === 'right' ? x.align : '' }));
-          else if (x.align === 'center' || x.align === 'right') out.push(p(x.runs, { style: 'Centered', pageBreak, align: x.align === 'right' ? 'right' : '' }));
-          else out.push(p(x.runs, { style: x.flush ? 'ManuscriptNoIndent' : 'Manuscript', pageBreak }));
+          const dir = x.dir || m.dir || 'ltr';
+          const align = m.dir === 'rtl' || x.dir ? alignment(x.align, dir) : x.align === 'center' || x.align === 'right' ? x.align : '';
+          if (x.sceneBreak) out.push(p(plainRun('#'), { style: 'SceneBreak', pageBreak, dir: x.dir }));
+          else if (x.poetry) out.push(p(x.runs, { style: 'Poetry', pageBreak, align, dir: x.dir }));
+          else if (align) out.push(p(x.runs, { style: 'Centered', pageBreak, align: align === 'right' || align === 'left' ? align : '', dir: x.dir }));
+          else out.push(p(x.runs, { style: x.flush ? 'ManuscriptNoIndent' : 'Manuscript', pageBreak, dir: x.dir }));
         });
         if (lead) out.push(p([], { pageBreak: true }));
       }
@@ -181,11 +224,12 @@
     return out;
   }
 
+  // Physical left mirrors the PDF; placement in real Word/LibreOffice remains unverified.
   function headerXml(m, empty) {
     const fld = (type, extra = '') => `<w:r><w:fldChar w:fldCharType="${type}"/>${extra}</w:r>`;
     const body = empty ? '<w:p><w:pPr><w:pStyle w:val="Header"/></w:pPr></w:p>'
-      : '<w:p><w:pPr><w:pStyle w:val="Header"/><w:jc w:val="right"/></w:pPr>'
-        + `<w:r><w:t xml:space="preserve">${escXml(headerText(m))}</w:t></w:r>`
+      : '<w:p><w:pPr><w:pStyle w:val="Header"/><w:jc w:val="' + (m.dir === 'rtl' ? 'left' : 'right') + '"/></w:pPr>'
+        + (m.dir === 'rtl' || hasRtl(headerText(m)) ? runsXml(plainRun(headerText(m))) : `<w:r><w:t xml:space="preserve">${escXml(headerText(m))}</w:t></w:r>`)
         + fld('begin') + '<w:r><w:instrText xml:space="preserve"> PAGE </w:instrText></w:r>' + fld('separate') + '<w:r><w:t>1</w:t></w:r>' + fld('end')
         + '</w:p>';
     return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -194,18 +238,19 @@
 
   function stylesXml(m) {
     const f = escXml(fontOf(m).docx);
+    const complex = m.dir === 'rtl' || hasRtl(JSON.stringify(m));
     const lang = escXml(m.lang || 'en-US');
     const para = (id, name, pPr, rPr = '', next = 'Manuscript') => `<w:style w:type="paragraph" w:styleId="${id}"><w:name w:val="${name}"/><w:basedOn w:val="Normal"/><w:next w:val="${next}"/><w:qFormat/>${pPr ? '<w:pPr>' + pPr + '</w:pPr>' : ''}${rPr ? '<w:rPr>' + rPr + '</w:rPr>' : ''}</w:style>`;
     const chr = (id, name, rPr) => `<w:style w:type="character" w:styleId="${id}"><w:name w:val="${name}"/><w:qFormat/><w:rPr>${rPr}</w:rPr></w:style>`;
     const single = '<w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/>';
     return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
-<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="${f}" w:hAnsi="${f}" w:eastAsia="${f}" w:cs="${f}"/><w:sz w:val="24"/><w:szCs w:val="24"/><w:lang w:val="${lang}"/></w:rPr></w:rPrDefault>
+<w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="${f}" w:hAnsi="${f}" w:eastAsia="${f}" w:cs="${f}"/><w:sz w:val="24"/><w:szCs w:val="24"/><w:lang w:val="${lang}"${complex ? ` w:bidi="${escXml(bidiLang(Bidi.isRtlLang(m.lang) ? m.lang : 'he'))}"` : ''}/></w:rPr></w:rPrDefault>
 <w:pPrDefault><w:pPr><w:widowControl w:val="0"/><w:spacing w:before="0" w:after="0" w:line="${DOUBLE}" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults>
-<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style>
+<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/>${m.dir === 'rtl' ? '<w:pPr><w:bidi/></w:pPr>' : ''}</w:style>
 ${para('Manuscript', 'Manuscript Text', `<w:ind w:firstLine="${TWIP / 2}"/>`)}
 ${para('ManuscriptNoIndent', 'Manuscript Text No Indent', '')}
-${para('Poetry', 'Poetry', `<w:ind w:left="${TWIP / 2}" w:right="${TWIP / 2}"/>`)}
+${para('Poetry', 'Poetry', `<w:ind w:${m.dir === 'rtl' ? 'start' : 'left'}="${TWIP / 2}" w:${m.dir === 'rtl' ? 'end' : 'right'}="${TWIP / 2}"/>`)}
 ${para('LitRPG', 'LitRPG', ['top', 'left', 'bottom', 'right'].map((side) => `<w:${side} w:val="single" w:sz="4" w:space="${side === 'top' || side === 'bottom' ? 4 : 6}" w:color="999999"/>`).join('').replace(/^/, '<w:pBdr>') + '</w:pBdr><w:shd w:val="clear" w:color="auto" w:fill="EDEDED"/><w:spacing w:before="0" w:after="0" w:line="240" w:lineRule="auto"/>' + `<w:ind w:left="${TWIP / 2}" w:right="${TWIP / 2}"/>`, '<w:rFonts w:ascii="Courier New" w:hAnsi="Courier New" w:eastAsia="Courier New" w:cs="Courier New"/>')}
 ${para('Centered', 'Centered', '<w:jc w:val="center"/>')}
 ${para('SceneBreak', 'Scene Break', '<w:jc w:val="center"/>')}
@@ -216,9 +261,9 @@ ${para('Contact', 'Contact Details', single, '', 'Contact')}
 ${para('ManuscriptTitle', 'Manuscript Title', '<w:keepNext/><w:jc w:val="center"/>', '', 'Byline')}
 ${para('Byline', 'Byline', '<w:jc w:val="center"/>')}
 ${para('Header', 'Header', single, '', 'Header')}
-${chr('Emphasis', 'Emphasis', '<w:i/>')}
-${chr('Strong', 'Strong', '<w:b/>')}
-${chr('StrongEmphasis', 'Strong Emphasis', '<w:b/><w:i/>')}
+${chr('Emphasis', 'Emphasis', '<w:i/>' + (complex ? '<w:iCs/>' : ''))}
+${chr('Strong', 'Strong', '<w:b/>' + (complex ? '<w:bCs/>' : ''))}
+${chr('StrongEmphasis', 'Strong Emphasis', complex ? '<w:b/><w:bCs/><w:i/><w:iCs/>' : '<w:b/><w:i/>')}
 ${para('FootnoteText', 'footnote text', single, '', 'FootnoteText')}
 ${chr('FootnoteReference', 'footnote reference', '<w:vertAlign w:val="superscript"/>')}
 </w:styles>`;
@@ -234,13 +279,17 @@ ${chr('FootnoteReference', 'footnote reference', '<w:vertAlign w:val="superscrip
   // Word's footnotes part: the two separators Word expects, then the notes
   function footnotesXml(list) {
     const sep = (id, type) => `<w:footnote w:type="${type}" w:id="${id}"><w:p><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr><w:r><w:${type}/></w:r></w:p></w:footnote>`;
+    const noteP = (n) => {
+      const ref = '<w:r><w:rPr><w:rStyle w:val="FootnoteReference"/></w:rPr><w:footnoteRef/></w:r>';
+      return p(plainRun(' ' + n.text), { style: 'FootnoteText', dir: n.dir }).replace('</w:pPr>', '</w:pPr>' + ref);
+    };
     return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">${sep(-1, 'separator')}${sep(0, 'continuationSeparator')}${list.map((n, i) => `<w:footnote w:id="${i + 1}"><w:p><w:pPr><w:pStyle w:val="FootnoteText"/></w:pPr><w:r><w:rPr><w:rStyle w:val="FootnoteReference"/></w:rPr><w:footnoteRef/></w:r><w:r><w:t xml:space="preserve"> ${escXml(n)}</w:t></w:r></w:p></w:footnote>`).join('')}</w:footnotes>`;
+<w:footnotes xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">${sep(-1, 'separator')}${sep(0, 'continuationSeparator')}${list.map((n, i) => `<w:footnote w:id="${i + 1}">${n && typeof n === 'object' ? noteP(n) : `<w:p><w:pPr><w:pStyle w:val="FootnoteText"/></w:pPr><w:r><w:rPr><w:rStyle w:val="FootnoteReference"/></w:rPr><w:footnoteRef/></w:r>${wordModel && (wordModel.dir === 'rtl' || hasRtl(n)) ? runsXml(plainRun(' ' + n)) : `<w:r><w:t xml:space="preserve"> ${escXml(n)}</w:t></w:r>`}</w:p>`}</w:footnote>`).join('')}</w:footnotes>`;
   }
 
   function docxEntries(m) {
-    notes = [];
-    try { return docxParts(m); } finally { notes = null; }
+    notes = []; wordModel = m;
+    try { return docxParts(m); } finally { notes = null; wordModel = null; }
   }
   function docxParts(m) {
     const NS = 'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"';
@@ -298,7 +347,7 @@ ${headers.map((h) => `<Relationship Id="${h.id}" Type="http://schemas.openxmlfor
     return (runs || []).map((r) => {
       if (r.br) return '<br>';
       // a footnote: Paged.js sets it at the foot of its page
-      if (r.fn !== undefined) { fnCount += 1; return `<sup class="fncall">${fnCount}</sup><span class="footnote">${fnCount}. ${escHtml(r.fn)}</span>`; }
+      if (r.fn !== undefined) { fnCount += 1; return `<sup class="fncall">${fnCount}</sup><span class="footnote"${/^(ltr|rtl)$/.test(r.fnDir) ? ` dir="${r.fnDir}" style="direction:${r.fnDir};text-align:${r.fnDir === 'rtl' ? 'right' : 'left'}"` : ''}>${fnCount}. ${escHtml(r.fn)}</span>`; }
       let t = escHtml(r.text);
       if (r.s) t = '<s>' + t + '</s>';
       if (r.u) t = '<u>' + t + '</u>';
@@ -320,18 +369,20 @@ ${headers.map((h) => `<Relationship Id="${h.id}" Type="http://schemas.openxmlfor
   // fontFaces: @font-face rules the window embeds (Courier Prime).
   function html(m, { fontFaces = '' } = {}) {
     fnCount = 0;
+    const rtl = m.dir === 'rtl';
+    const dirAttr = (x) => x.dir && x.dir !== (m.dir || 'ltr') ? ` dir="${x.dir}"` : '';
     const pp = paperOf(m);
     const lines = [m.contact && m.contact.name, ...((m.contact && m.contact.lines) || [])].map((x) => String(x || '').trim()).filter(Boolean);
-    const contact = `<div class="contact"><div class="row1"><span>${escHtml(lines[0] || '')}</span><span>${escHtml(m.wordsText || '')}</span></div>${lines.slice(1).map((l) => `<div>${escHtml(l)}</div>`).join('')}</div>`;
+    const contact = `<div class="contact"><div class="row1"><span>${escHtml(lines[0] || '')}</span><span>${escHtml(m.wordsText || '')}</span></div>${lines.slice(1).map((l) => `<div${contactDir(l, m) ? ' dir="ltr"' : ''}>${escHtml(l)}</div>`).join('')}</div>`;
     const titleTop = `calc(${pp.in[1] / 2 - 1}in - ${lines.length * 1.2}em - 4em)`;
     const story = [];
     let first = true;
     for (const sec of m.sections || []) {
       const cls = [first && !m.short ? 'pg1' : '', !first || sec.pageBreak ? 'newpage' : ''].filter(Boolean).join(' ');
       if (sec.kind === 'part') {
-        story.push(`<section class="part ${cls}"><h2>${escHtml(sec.heading || '')}${sec.partTitle ? `<br>${escHtml(sec.partTitle)}` : ''}</h2>${(sec.paras || []).filter((x) => !x.sceneBreak).map((x) => `<p class="c">${runsHtml(x.runs)}</p>`).join('')}</section>`);
+        story.push(`<section class="part ${cls}"><h2>${escHtml(sec.heading || '')}${sec.partTitle ? `<br>${escHtml(sec.partTitle)}` : ''}</h2>${(sec.paras || []).filter((x) => !x.sceneBreak).map((x) => `<p class="c"${dirAttr(x)}>${runsHtml(x.runs)}</p>`).join('')}</section>`);
       } else if (sec.kind === 'epigraph') {
-        story.push(`<section class="epigraph ${cls}">${(sec.paras || []).filter((x) => !x.sceneBreak).map((x) => `<p class="c">${runsHtml(x.runs)}</p>`).join('')}</section>`);
+        story.push(`<section class="epigraph ${cls}">${(sec.paras || []).filter((x) => !x.sceneBreak).map((x) => `<p class="c"${dirAttr(x)}>${runsHtml(x.runs)}</p>`).join('')}</section>`);
       } else {
         const list = sec.paras || [];
         const paras = list.map((x, i) => {
@@ -339,24 +390,25 @@ ${headers.map((h) => `<Relationship Id="${h.id}" Type="http://schemas.openxmlfor
           if (x.blank) return '<p class="blank">&#160;</p>';
           if (x.litrpg) {
             const edge = [list[i - 1] && list[i - 1].litrpg ? '' : 'lt-top', list[i + 1] && list[i + 1].litrpg ? '' : 'lt-end'].filter(Boolean).join(' ');
-            return `<p class="litrpg${edge ? ' ' + edge : ''}">${runsHtml(boxSpaces(x.runs)) || '&#8203;'}</p>`;
+            return `<p class="litrpg${edge ? ' ' + edge : ''}"${dirAttr(x)}>${runsHtml(boxSpaces(x.runs)) || '&#8203;'}</p>`;
           }
-          const c = x.poetry ? 'poetry' : x.align === 'center' ? 'c' : x.align === 'right' ? 'r' : x.flush ? 'flush' : '';
-          return `<p${c ? ` class="${c}"` : ''}>${runsHtml(x.runs)}</p>`;
+          const physical = rtl || x.dir ? (x.align === 'start' ? (x.dir || m.dir) === 'rtl' ? 'right' : 'left' : x.align === 'end' ? (x.dir || m.dir) === 'rtl' ? 'left' : 'right' : x.align) : x.align;
+          const c = x.poetry ? 'poetry' : physical === 'center' ? 'c' : physical === 'right' ? 'r' : rtl && physical === 'left' ? 'l' : x.flush ? 'flush' : '';
+          return `<p${c ? ` class="${c}"` : ''}${dirAttr(x)}>${runsHtml(x.runs)}</p>`;
         }).join('\n');
         story.push(`<section class="chapter ${cls}${sec.heading ? '' : ' plain'}">${sec.heading ? `<h2>${escHtml(sec.heading)}</h2>` : ''}${paras}</section>`);
       }
       first = false;
     }
     if (m.endText) story.push(`<p class="end">${escHtml(m.endText)}</p>`);
-    const font = fontOf(m).css;
-    return `<!DOCTYPE html><html lang="${escHtml(m.lang || 'en')}"><head><meta charset="utf-8"><title>${escHtml(m.title || '')}</title><style>
+    const font = (rtl ? (m.font === 'courier' ? '"NEO Hebrew Mono", ' : '"NEO Hebrew Serif", ') : '') + fontOf(m).css;
+    return `<!DOCTYPE html><html lang="${escHtml(m.lang || 'en')}"${rtl ? ' dir="rtl"' : ''}><head><meta charset="utf-8"><title>${escHtml(m.title || '')}</title><style>
 ${fontFaces}
 @page { size: ${pp.css}; margin: 1in;
-  @top-right { content: ${cssString(headerText(m))} counter(page); font-family: ${font}; font-size: 12pt; vertical-align: middle; }
+  @${rtl ? 'top-left' : 'top-right'} { content: ${cssString(headerText(m))} counter(page); font-family: ${font}; font-size: 12pt; vertical-align: middle; }
 }
-@page titlepage { @top-right { content: none; } }
-${m.short ? '@page :first { @top-right { content: none; } }' : ''}
+@page titlepage { @${rtl ? 'top-left' : 'top-right'} { content: none; } }
+${m.short ? `@page :first { @${rtl ? 'top-left' : 'top-right'} { content: none; } }` : ''}
 html, body { margin: 0; padding: 0; background: #fff; color: #000; }
 body { font-family: ${font}; font-size: 12pt; line-height: 2; }
 .titlepage { ${m.short ? '' : 'page: titlepage; break-after: page;'} }
@@ -385,7 +437,17 @@ b { font-weight: bold; }
 [data-footnote-marker] { list-style: none; }
 .fncall { font-size: 0.7em; vertical-align: super; line-height: 0; }
 @page { @footnote { border-top: 0.5pt solid #000; padding-top: 0.5em; margin-top: 1em; } }
-</style></head><body>
+${rtl ? `
+/* Paged.js measures physical columns left-to-right; only their text is RTL. */
+.pagedjs_pagebox, .pagedjs_page_content { direction: ltr; }
+.pagedjs_page_content > div, .pagedjs_margin-content, .pagedjs_footnote_content { direction: rtl; }
+/* Footnote overflow uses the same physical column detector. */
+.pagedjs_footnote_inner_content { direction: ltr; }
+.footnote { direction: rtl; }
+.contact { text-align: right; }
+p.l { text-align: left; text-indent: 0; }
+.footnote { text-align: right; text-align: start; }
+` : ''}</style></head><body>
 <section class="titlepage${m.short ? ' pg1' : ''}">${contact}<p class="mtitle c">${escHtml(m.title || '')}</p>${m.byText ? `<p class="byline c">${escHtml(m.byText)}</p>` : ''}</section>
 ${story.join('\n')}
 </body></html>`;

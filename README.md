@@ -6,6 +6,18 @@ NEO understands from the moment you install it that you are writing *books* and 
 
 NEO runs locally. WIPs are saved in plain files on your disk. No accounts or subscriptions. And it's free!
 
+## About this fork: Hebrew and right-to-left books
+
+This is a fork of [hughhowey/neo](https://github.com/hughhowey/neo) that adds Hebrew and right-to-left writing. The change is too large to merge upstream in one piece, so it lives here and follows NEO's `main`.
+
+- **A Hebrew interface** (Options → Interface language → עברית), mirrored right to left.
+- **Right-to-left books.** A book written in Hebrew runs right to left, with English words, sentences, numbers and whole paragraphs mixed in. Each paragraph takes the direction of its first letter, and Format → Paragraph Direction / Book Direction set it by hand. English books are untouched, in either interface.
+- **Hebrew typing.** “…” quotation marks, geresh and gershayim in abbreviations (צה״ל), Insert Maqaf, no automatic capitals, and Find that ignores niqqud.
+- **Every export right to left:** Word, EPUB, PDF, web page, Markdown, the KDP paperback (bound on the right) and its cover, manuscript format, and Hebrew screenplays.
+- **Hebrew fonts** for the page, drop caps and covers (Frank Ruhl Libre, Noto Sans Hebrew and four display faces, all OFL), and NEO Pocket in Hebrew.
+
+How it works is in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), the decisions behind it in [docs/DECISIONS.md](docs/DECISIONS.md). The Hebrew interface is a machine translation that still needs a native review ([docs/he-glossary.md](docs/he-glossary.md)); [docs/RELEASE-CHECKLIST-HEBREW.md](docs/RELEASE-CHECKLIST-HEBREW.md) lists what still has to be checked in real programs and on devices. This fork has no installers yet: run it from source with `npm install` and `npm start`.
+
 ## Download
 
 Get the latest installer from the **[Releases page](../../releases)**:

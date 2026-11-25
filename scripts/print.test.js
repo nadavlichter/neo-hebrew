@@ -60,6 +60,19 @@ describe('paperback', () => {
     assert.equal(ctx.hyphenateHtml(html, 'ja'), html);
   });
 
+  test('Hebrew books get no soft hyphens, including Latin quotations and legacy language codes', () => {
+    const html = '<p class="hy">שָׁלוֹם התצלומים extraordinary photographs וסיום</p>';
+    for (const lang of ['he', 'he-IL', 'HE_IL', 'iw', 'iw-IL']) assert.equal(ctx.hyphenateHtml(html, lang), html);
+  });
+
+  test('a word containing Hebrew is never passed through Latin hyphenation', () => {
+    assert.equal(ctx.hyphenateWord('extraordinaryשלום', () => 'extra­ordinaryשלום', false), 'extraordinaryשלום');
+    const out = ctx.hyphenateHtml('<p class="hy">התצלומים extraordinary photographs סוף</p><p>extraordinary photographs</p>', 'en');
+    assert.ok(out.includes('התצלומים'));
+    assert.ok(out.includes(SHY));
+    assert.ok(out.endsWith('<p>extraordinary photographs</p>'));
+  });
+
   test('the page box is written back exact, in the same number of bytes', () => {
     const pdf = Buffer.from('1 0 obj << /Type /Page /MediaBox [0 0 838.07996 630] >> endobj', 'latin1');
     const out = ctx.exactPageBox(pdf, 11.635, 8.75);
@@ -75,4 +88,27 @@ describe('paperback', () => {
     assert.ok(!html.includes('no text on the spine'));
     assert.ok(ctx.kdpCoverHtml({ trim: '5x8', paper: 'white', pages: 60, title: 'T', author: '' }).includes('no text on the spine'));
   });
+});
+
+test('RTL cover swaps panels and barcode, reverses the spine and uses the book language without isolates', () => {
+  const html=ctx.kdpCoverHtml({trim:'6x9',paper:'cream',pages:300,title:'הים',author:'דנה',dir:'rtl',language:'he'});
+  assert.match(html,/<html lang="he" dir="rtl">/);
+  assert.match(html, /class="panel" style="left:0.1250in;[^>]*>כריכה קדמית<\/div>/);
+  assert.match(html, /class="panel" style="left:6.8750in;[^>]*>כריכה אחורית<\/div>/);
+  assert.match(html, /class="barcode" style="left:7.1250in;/);
+  assert.ok(html.includes('<span dir="ltr">2 × 1.2 in</span>'), 'the barcode size reads left to right');
+  assert.ok(html.includes('transform: rotate(-90deg)'));
+  assert.ok(!/[\u200e\u200f\u061c\u2066-\u2069]/.test(html));
+});
+
+test('English cover template is byte-identical to e8d0840', (t) => {
+  let old;
+  try { old=require('node:child_process').execFileSync('git',['show','e8d0840:main.js'],{cwd:root,maxBuffer:1<<26,stdio:['ignore','pipe','ignore']}).toString(); }
+  catch { t.skip('requires git and pinned e8d0840');return; }
+  const context=vm.createContext({t:vm.runInContext('t',ctx),NeoI18n:require('../i18n.js')});
+  vm.runInContext(old.slice(old.indexOf('const KDP_TRIMS ='),old.indexOf('function kdpGutterMin('))+'\n'+old.slice(old.indexOf('function kdpCoverHtml('),old.indexOf('// The window hands over'))+'\nthis.cover=kdpCoverHtml;',context);
+  for(const pages of [24,79,300]) {
+    const opts={trim:'6x9',paper:'cream',pages,title:'A & B',author:'Dana',dir:'ltr',language:'en'};
+    assert.equal(ctx.kdpCoverHtml(opts),context.cover(opts));
+  }
 });

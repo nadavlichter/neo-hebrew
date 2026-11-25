@@ -105,7 +105,7 @@ const CAPS_ABBREV = new Set(['mr', 'mrs', 'ms', 'dr', 'st', 'jr', 'sr', 'vs', 'e
   'f.eks', 'bl.a', 'dvs', 'osv', 'mv', 'evt', 'jf', 'kl', 'nr', 'pga', 'mht', 'inkl']);
 function capitalSlips(el) {
   const out = [];
-  if (typeof el.matches !== 'function' || !el.matches('.chapter-body')) return out;
+  if (typeof el.matches !== 'function' || !el.matches('.chapter-body') || hebrewWriting()) return out;
   const english = /^en\b/.test(writingLanguage());
   for (const p of el.querySelectorAll('p:not(.poetry):not(.litrpg):not(.scene-break)')) {
     // the paragraph's text, and which node holds each stretch of it
@@ -334,7 +334,7 @@ function showSpellMenu(x, y, word, suggestions, actions) {
   }
   document.body.appendChild(menu);
   const r = menu.getBoundingClientRect();
-  menu.style.left = Math.min(x, window.innerWidth - r.width - 10) + 'px';
+  menu.style.left = (uiRtl() ? NeoBidi.menuLeft(x, r.width, window.innerWidth, true, 10) : Math.min(x, window.innerWidth - r.width - 10)) + 'px';
   menu.style.top = Math.min(y + 4, window.innerHeight - r.height - 10) + 'px';
   const back = document.activeElement; // where the writer was, to go back to
   const close = (ev) => {
@@ -565,8 +565,12 @@ function currentAlign() {
   const body = el && el.closest ? el.closest('.chapter-body') : null;
   const p = el && el.closest ? el.closest('p') : null;
   if (!body || !p || !body.contains(p)) return null;
-  const value = (p.style && p.style.textAlign) || 'left';
-  return ['left', 'center', 'right', 'justify'].includes(value) ? value : null;
+  return NeoBidi.alignOf(p.style && p.style.textAlign, paraDirOf(p));
+}
+// a paragraph's resolved direction: its own dir, else the book's
+function paraDirOf(p) {
+  const d = p.getAttribute('dir');
+  return d === 'rtl' || d === 'ltr' ? d : bookDirection();
 }
 
 // the View and Format menus' ticks (focus level, page, brighter interface, body font, drop cap,
@@ -595,8 +599,10 @@ function reportViewState() {
     pageTheme: library.pageTheme || 'night',
     uiBright: document.body.classList.contains('bright'),
     bodyFont: (library.fonts && library.fonts.body) || '',
-    dropCap: (library.fonts && library.fonts.dropcap) || 'literary',
+    dropCap: dropCapStyle(),
     align: currentAlign(),
+    paraDir: currentParaDir(),
+    bookDir: book ? bookDirection() : null,
   };
   const key = JSON.stringify(payload);
   if (key === viewStateSent) return;
@@ -622,14 +628,14 @@ function setFocus(level) {
 function cycleFocus() { setFocus(FOCUS_LEVELS[(FOCUS_LEVELS.indexOf(focusLevel) + 1) % FOCUS_LEVELS.length]); }
 
 // the paragraph (direct <p> child of a chapter body) holding the caret
-function focusParagraph() {
+function focusParagraph(body = null) {
   const sel = window.getSelection();
   if (!sel.rangeCount) return null;
   let el = sel.focusNode;
   if (el && el.nodeType === Node.TEXT_NODE) el = el.parentElement;
   if (!el || !el.closest) return null;
-  const body = el.closest('.chapter-body');
-  if (!body) return null;
+  body = body || el.closest('.chapter-body');
+  if (!body || !body.contains(el)) return null;
   let p = el;
   while (p && p.parentElement !== body) p = p.parentElement;
   return p && p.tagName === 'P' ? p : null;
@@ -660,13 +666,16 @@ function rangeFromOffsets(p, start, end) {
   return r;
 }
 
-let focusSegmenter = null;
+let focusSegmenter = null, focusSegmenterLang = '';
 function sentenceRange(p) {
   const text = p.textContent;
   if (!text.trim()) return null;
   const at = caretOffsetIn(p);
-  if (!focusSegmenter && window.Intl && Intl.Segmenter) {
-    focusSegmenter = new Intl.Segmenter((library.spellLanguage || 'en').split('-')[0], { granularity: 'sentence' });
+  // kept per language: a book of its own language needs its own rules
+  const segLang = (writingLanguage() || 'en').split(/[-_]/)[0];
+  if ((!focusSegmenter || focusSegmenterLang !== segLang) && window.Intl && Intl.Segmenter) {
+    focusSegmenter = new Intl.Segmenter(segLang, { granularity: 'sentence' });
+    focusSegmenterLang = segLang;
   }
   if (!focusSegmenter) return null;
   let hit = null, last = null;
@@ -757,7 +766,8 @@ function statsChartSvg() {
   const goalLine = goal
     ? `<line x1="${PAD}" x2="${W - PAD}" y1="${(H - PAD - (goal / maxC) * (H - PAD * 2 - 20)).toFixed(1)}" y2="${(H - PAD - (goal / maxC) * (H - PAD * 2 - 20)).toFixed(1)}" stroke="#c9a86a" stroke-dasharray="5,4" stroke-width="1" opacity="0.7"/>`
     : '';
-  return `<svg id="stats-chart" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${escHtml(t('Words written over the last 30 days')).replace(/"/g, '&quot;')}">
+  // days run right to left in a right-to-left interface: the picture (no text in it) is mirrored
+  return `<svg id="stats-chart" width="${W}" height="${H}"${uiRtl() ? ' style="transform:scaleX(-1)"' : ''} viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="${escHtml(t('Words written over the last 30 days')).replace(/"/g, '&quot;')}">
     ${bars}
     <path d="${line}" fill="none" stroke="#c9a86a" stroke-width="2"/>
     ${goalLine}
@@ -819,8 +829,8 @@ function openCoverArt() {
         </div>
         <p class="soft" style="font-size:12px;margin:0 0 6px">${t('Leave blank for NEO’s defaults. Names drift; if a provider retires one, NEO tries its own list before giving up.')}</p>
       </details>
-      <div style="text-align:right;margin-top:14px">
-        <button class="m-cancel btn-quiet" style="margin-right:10px">${t('Cancel')}</button>
+      <div style="text-align:end;margin-top:14px">
+        <button class="m-cancel btn-quiet" style="margin-inline-end:10px">${t('Cancel')}</button>
         <button class="m-ok btn-gold">${t('Save')}</button>
       </div>
     </div>`;
@@ -920,7 +930,7 @@ function openStats() {
         <label>${t('Sprint')} <input id="st-sprint" type="number" min="50" value="${sprint ? sprint.target : 500}"/> ${t('words')}</label>
         <button id="st-sprint-btn" class="btn-gold" style="align-self: center;">${sprint && !sprint.done ? t('End sprint') : t('Start sprint')}</button>
       </div>` : ''}
-      <div style="text-align:right;margin-top:14px">
+      <div style="text-align:end;margin-top:14px">
         <button class="m-ok btn-gold">${t('Done')}</button>
       </div>
     </div>`;

@@ -30,11 +30,25 @@ const SP_EMPTY = { action: 'character', character: 'action', dialogue: 'action',
 // Tab steps through these (in a speech, Tab trades dialogue and parenthetical)
 const SP_CYCLE = ['action', 'character', 'transition', 'heading', 'shot'];
 const SP_LINES_PER_PAGE = 54;
-const SP_HEAD_RE = /^(?:INT\.?\/EXT|INT\/EXT|I\/E|INT|EXT|EST)(?:\.|\s)/i;
-const SP_HEAD_PARSE = /^(INT\.?\/EXT\.?|INT\/EXT\.?|I\/E\.?|INT\.?|EXT\.?|EST\.?)\s+(.*)$/i;
-const SP_TIMES = ['DAY', 'NIGHT', 'CONTINUOUS', 'LATER', 'MORNING', 'EVENING', 'DAWN', 'DUSK', 'MOMENTS LATER', 'SAME TIME'];
-const SP_TRANSITIONS = ['CUT TO:', 'DISSOLVE TO:', 'SMASH CUT TO:', 'MATCH CUT TO:', 'JUMP CUT TO:', 'FADE OUT.', 'FADE TO BLACK.', 'INTERCUT WITH:'];
-const SP_EXTENSIONS = ['V.O.)', 'O.S.)', 'O.C.)', "CONT'D)"];
+// Hebrew scripts (Phase 10.3): פנים. (INT.), חוץ. (EXT.), פנים/חוץ. and
+// פנים-חוץ., always with the period; the times of day, transitions and
+// extensions below. Provisional: they need a Hebrew screenwriter's review.
+// (No \b: it knows only Latin letters.)
+const SP_HEAD_LATIN = /^(?:INT\.?\/EXT|INT\/EXT|I\/E|INT|EXT|EST)(?:\.|\s)/i;
+const SP_HEAD_HE = /^(?:פנים\/חוץ|פנים-חוץ|פנים|חוץ)\./;
+const SP_HEAD_RE = new RegExp(SP_HEAD_LATIN.source + '|' + SP_HEAD_HE.source, 'i');
+const SP_HEAD_PARSE = /^(INT\.?\/EXT\.?|INT\/EXT\.?|I\/E\.?|INT\.?|EXT\.?|EST\.?|פנים\/חוץ\.|פנים-חוץ\.|פנים\.|חוץ\.)\s+(.*)$/i;
+const SP_TIMES = ['DAY', 'NIGHT', 'CONTINUOUS', 'LATER', 'MORNING', 'EVENING', 'DAWN', 'DUSK', 'MOMENTS LATER', 'SAME TIME', 'יום', 'לילה', 'ערב', 'בוקר'];
+const SP_TRANSITIONS = ['CUT TO:', 'DISSOLVE TO:', 'SMASH CUT TO:', 'MATCH CUT TO:', 'JUMP CUT TO:', 'FADE OUT.', 'FADE TO BLACK.', 'INTERCUT WITH:',
+  'קאט ל:', 'מעבר ל:', 'פייד אאוט.', 'פייד אין:'];
+const SP_EXTENSIONS = ['V.O.)', 'O.S.)', 'O.C.)', "CONT'D)", 'ק.ב.)', 'מחוץ לפריים)', 'המשך)'];
+// (CONT'D) as the script's language writes it (provisional for Hebrew); the
+// screen's is in styles.css, under the same language
+const SP_CONTD_WORDS = { he: '(המשך)' };
+function spContdWord(lang) {
+  const base = String(lang || '').toLowerCase().split(/[-_]/)[0];
+  return SP_CONTD_WORDS[base === 'iw' ? 'he' : base] || "(CONT'D)";
+}
 
 // a speaker's name without (V.O.) and the like
 function spBareName(t) {
@@ -48,14 +62,34 @@ function spLooksLikeTransition(t) {
   return !!s && s === s.toUpperCase() && /\p{Lu}/u.test(s) && (/TO:$/.test(s) || s === 'FADE OUT.' || s === 'FADE TO BLACK.');
 }
 // Fountain's character: a short line all in capitals (an extension in
-// parentheses may follow), not a sentence
-function spLooksLikeCharacter(t) {
+// parentheses may follow), not a sentence. A script whose language has no
+// capitals (Hebrew) passes { caseless: true, cast }: there a short line that
+// is a name the script already has is one too (or Fountain's @, spForced).
+function spLooksLikeCharacter(t, opts) {
   const s = String(t || '').trim();
+  if (opts && opts.caseless && spCastCue(s, opts.cast)) return true;
   if (!s || s.length > 38 || s !== s.toUpperCase() || !/\p{Lu}/u.test(s)) return false;
   const name = s.replace(/\s*\^\s*$/, '').replace(/\s*\([^)]*\)\s*$/, '').trim();
   if (!name || !/\p{Lu}/u.test(name)) return false;
   if (/[.!?,;:—–-]$/.test(name) && !/^(MR|MRS|MS|DR|ST|JR|SR)\.$/.test(name.split(/\s+/).pop())) return false;
   return name.split(/\s+/).length <= 4;
+}
+// a short line, not a sentence, that is (with any extension) a name in the cast
+function spCastCue(s, cast) {
+  if (!s || s.length > 38 || !cast || !cast.length) return false;
+  const name = spBareName(s);
+  if (!name || /[.!?,;:—–]$/.test(name) || name.split(/\s+/).length > 4) return false;
+  return cast.includes(name);
+}
+// Fountain's forcing marks, typed at the start of a line in a script with no
+// capitals: @ a character, . a scene heading, > a transition. The mark comes
+// off, as in Fountain. null when the line has none.
+function spForced(t) {
+  const s = String(t || '').trim();
+  if (/^@./.test(s)) return { type: 'character', text: s.slice(1).trim() };
+  if (/^\.[^.\s]/.test(s)) return { type: 'heading', text: s.slice(1).trim() };
+  if (/^>./.test(s) && !s.endsWith('<')) return { type: 'transition', text: s.slice(1).trim() };
+  return null;
 }
 function spParseHeading(t) {
   const m = String(t || '').match(SP_HEAD_PARSE);
@@ -245,7 +279,8 @@ function spToFountain(lines, title = {}) {
     }
     inSpeech = false;
     gap();
-    if (l.type === 'heading') out.push(SP_HEAD_RE.test(caps) ? caps : '.' + caps);
+    // (a Hebrew heading is forced too: other Fountain readers know only INT./EXT.)
+    if (l.type === 'heading') out.push(SP_HEAD_LATIN.test(caps) ? caps : '.' + caps);
     else if (l.type === 'character') {
       // a name Fountain wouldn't take for one on sight ("MAN IN THE BLUE
       // HAT", "GUARD!") is forced, so the speech comes back as a speech
@@ -268,7 +303,7 @@ function spToFountain(lines, title = {}) {
 // left out; notes, boneyard, sections, synopses and page breaks too.
 // A speaker's (CONT'D) is NEO's to draw: one typed in, or carried in from
 // Final Draft or a PDF, comes off the name
-const spDropContd = (t) => String(t || '').replace(/\s*\(\s*cont(?:['’]?d|inued)\s*\)\s*$/i, '').trim();
+const spDropContd = (t) => String(t || '').replace(/\s*\(\s*(?:cont(?:['’]?d|inued)|המשך)\s*\)\s*$/i, '').trim();
 // lines a PDF's text carries that aren't the script: page numbers, (MORE),
 // CONTINUED
 const SP_PDF_NOISE = /^(?:\d{1,3}[A-Z]?\.|\(MORE\)|\(?CONTINUED\)?:?|CONTINUED:)$/i;
@@ -283,6 +318,7 @@ function spFromFountain(src) {
   }
   const blank = (k) => k < 0 || k >= rows.length || rows[k].trim() === '';
   const out = [];
+  const cast = new Set();
   let inSpeech = false;
   // a block's lines run on into one paragraph: Fountain keeps a writer's
   // line breaks, and a script copied from a PDF is broken at every line
@@ -313,11 +349,15 @@ function spFromFountain(src) {
     if (s.startsWith('>') && s.endsWith('<')) { push('action', s.slice(1, -1).trim()); continue; }
     if (s.startsWith('>')) { push('transition', s.slice(1).trim()); continue; }
     if (s.startsWith('~')) { push('action', s.slice(1).trim()); continue; }
-    if (s.startsWith('@')) { push('character', spDropContd(s.slice(1).trim().replace(/\s*\^$/, ''))); inSpeech = true; continue; }
+    if (s.startsWith('@')) { push('character', spDropContd(s.slice(1).trim().replace(/\s*\^$/, ''))); cast.add(spBareName(out[out.length - 1].text)); inSpeech = true; continue; }
     if (SP_HEAD_RE.test(s) && blank(k - 1)) { push('heading', s.replace(/\s*#[^#\s]+#$/, '')); continue; }
     if (spLooksLikeTransition(s) && blank(k - 1) && blank(k + 1)) { push('transition', s); continue; }
-    if (blank(k - 1) && !blank(k + 1) && spLooksLikeCharacter(s.replace(/\s*\^$/, ''))) {
-      push('character', spDropContd(s.replace(/\s*\^$/, '')));
+    // a line with no capitals or small letters (Hebrew) is a name when an
+    // @ has already named that speaker
+    const cue = s.replace(/\s*\^$/, '');
+    if (blank(k - 1) && !blank(k + 1) && spLooksLikeCharacter(cue, /[\p{Lu}\p{Ll}]/u.test(cue) ? undefined : { caseless: true, cast: [...cast] })) {
+      push('character', spDropContd(cue));
+      cast.add(spBareName(out[out.length - 1].text));
       inSpeech = true;
       continue;
     }
@@ -325,6 +365,9 @@ function spFromFountain(src) {
   }
   return out;
 }
+// a script's lines ({text} or {runs}) as plain text, one line each, to judge
+// its direction by
+const spLinesText = (lines) => lines.map((l) => (l.runs ? l.runs.map((x) => x.text).join('') : String(l.text || ''))).join('\n');
 // Fountain's title page: Title, Credit, Author, Draft date, Contact (a value
 // on its own line or on indented lines below its key). Markup comes off.
 const SP_TITLE_KEY = /^(title|credit|author|authors|source|draft date|date|contact|copyright|notes|revision)\s*:/i;
@@ -450,7 +493,10 @@ function spFromFdx(xml) {
   if (right.length) title.draft = right.join('\n');
   return { lines, title };
 }
-// …and back out: lines [{type, runs}] (runs as paraRuns gives them)
+// …and back out: lines [{type, runs}] (runs as paraRuns gives them).
+// Final Draft's own support docs say RTL languages are unsupported. Keep
+// Unicode text without invented direction fields; native RTL FDX rendering
+// remains unverified. See docs/DECISIONS.md for the primary-source reference.
 function spToFdx(lines, title = {}) {
   const NAMES = { heading: 'Scene Heading', action: 'Action', character: 'Character', paren: 'Parenthetical', dialogue: 'Dialogue', transition: 'Transition', shot: 'Shot' };
   const CAPS = ['heading', 'character', 'transition', 'shot'];
@@ -666,7 +712,7 @@ function scriptKey(e, body) {
     spTab(p, e.shiftKey, ghost && !e.shiftKey && spCaretAtEnd(p) ? ghost : '');
     return true;
   }
-  if (e.key === 'ArrowRight' && !e.shiftKey && ghost && spCaretAtEnd(p)) {
+  if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && !e.shiftKey && ghost && spCaretAtEnd(p) && e.key === (getComputedStyle(p).direction === 'rtl' ? 'ArrowLeft' : 'ArrowRight')) {
     e.preventDefault();
     spInsert(ghost);
     spAfterChange(p);
@@ -742,10 +788,14 @@ function spEnter(p, body) {
     }
     return;
   }
-  // at the end: settle what this line is, then the next one
-  if (type === 'action') {
+  // at the end: settle what this line is, then the next one. In a script
+  // with no capitals (Hebrew), Fountain's @ . > at the start of a line that
+  // isn't speech say what it is, and come off
+  const forced = spCaseless() && type !== 'dialogue' && type !== 'paren' ? spForced(text) : null;
+  if (forced) { spReplaceAll(p, forced.text); spCaretToEnd(p); spSetClass(p, forced.type); type = forced.type; }
+  else if (type === 'action') {
     if (spLooksLikeTransition(text)) { spSetClass(p, 'transition'); type = 'transition'; }
-    else if (spLooksLikeCharacter(text)) { spSetClass(p, 'character'); spGuessed.add(p); type = 'character'; }
+    else if (spLooksLikeCharacter(text, spCueOpts(p))) { spSetClass(p, 'character'); spGuessed.add(p); type = 'character'; }
   }
   if (type === 'paren' && !/\)\s*$/.test(text)) spInsert(')');
   const guessed = spGuessed.has(p);
@@ -765,7 +815,7 @@ function spTab(p, back, ghost) {
   const type = spType(p);
   const text = p.textContent;
   // INT, EXT and the like, then Tab: a scene heading, with its period
-  const prefix = /^(INT|EXT|EST|I\/E|INT\.?\/EXT)\.?$/i.test(text.trim());
+  const prefix = /^(INT|EXT|EST|I\/E|INT\.?\/EXT|פנים|חוץ|פנים\/חוץ|פנים-חוץ)\.?$/i.test(text.trim());
   if ((type === 'heading' || (type === 'action' && prefix)) && !back) {
     const t = text.replace(/\s+$/, '');
     const h = spParseHeading(text);
@@ -918,6 +968,11 @@ function spMeasure(ps, live) {
     room.innerHTML = '<div class="sp-geom"></div>';
     document.body.appendChild(room);
   }
+  // the script's language and direction, so (CONT'D) is counted in its own
+  // words (styles.css); none for an English script, as before
+  const lang = book && typeof book.language === 'string' ? book.language : '';
+  if (lang) room.lang = lang; else room.removeAttribute('lang');
+  if (book && bookDirection() === 'rtl') room.dir = 'rtl'; else room.removeAttribute('dir');
   const inner = room.firstElementChild;
   inner.innerHTML = '';
   const frag = document.createDocumentFragment();
@@ -1096,7 +1151,7 @@ function renderScriptNav() {
     if (at >= s.i && (!next || at < next.i)) item.classList.add('current');
     item.innerHTML = '<div class="n-row"><span class="n-num"></span><span class="n-label"></span><span class="n-words"></span></div>';
     item.querySelector('.n-num').textContent = String(k + 1);
-    item.querySelector('.n-label').textContent = s.slug || '…';
+    setIsolated(item.querySelector('.n-label'), s.slug || '…');
     item.querySelector('.n-words').textContent = spEighthsText(spEighths(s.lines));
     const row = item.querySelector('.n-row');
     row.draggable = true;
@@ -1442,6 +1497,9 @@ async function importScript(r, shelf) {
     : { lines: spFromFountain(r.source).map((l) => ({ type: l.type, newPage: l.newPage, runs: spRunsFromFountain(l.text) })), title: spFountainTitle(r.source) };
   if (!parsed.lines.length) return false;
   const tp = parsed.title || {};
+  // Both formats arrive as logical Unicode text. Infer direction for NEO,
+  // never 'ltr', so existing English script metadata remains unchanged.
+  const dirSet = NeoBidi.inferRtlBook({}, spLinesText(parsed.lines) + '\n' + (tp.title || ''));
   const title = tp.title || r.name;
   const meta = await window.neo.createBook({ author: tp.author || displayAuthor(), title });
   const chId = 'ch-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
@@ -1449,6 +1507,7 @@ async function importScript(r, shelf) {
   await window.neo.writeChapter(meta.id, chId, html);
   meta.title = title;
   meta.format = 'screenplay';
+  if (dirSet) Object.assign(meta, dirSet);
   meta.chapterOrder = [chId];
   meta.credit = tp.credit || t('Written by');
   if (tp.titleStyle) meta.titleStyle = tp.titleStyle;
@@ -1484,6 +1543,16 @@ function spExportLines() {
 // headings underlined as well as bold, which some studios ask for, and
 // whether a returning speaker gets (CONT'D). Kept in the script's book.json.
 const spContdOn = () => !book || book.contd !== false;
+// A script whose language has no capitals, or that runs right to left
+// (Hebrew): its names can't be told by capitals (spLooksLikeCharacter), and
+// Fountain's @ . > mark a line instead (spForced). An English script: never.
+const spCaseless = () => !!book && isScript() && (bookDirection() === 'rtl' || /^(?:he|iw)(?:$|[-_])/i.test(book.language || ''));
+// what spLooksLikeCharacter needs to know about line p's script
+function spCueOpts(p) {
+  if (!spCaseless()) return undefined;
+  const ps = spParas();
+  return { caseless: true, cast: spNames(spLinesOf(ps), ps.indexOf(p)) };
+}
 const spUnderlineOn = () => !!(book && book.underlineHeadings);
 function spApplyStyle() {
   $('#paper').classList.toggle('sp-uline', isScript() && spUnderlineOn());
@@ -1491,7 +1560,7 @@ function spApplyStyle() {
 const SP_CAPS = ['heading', 'character', 'transition', 'shot'];
 function spRunsHtml(l) {
   const caps = SP_CAPS.includes(l.type);
-  return l.runs.map((r) => runHtml({ ...r, text: caps ? r.text.toUpperCase() : r.text })).join('') + (l.contd ? " (CONT'D)" : '');
+  return l.runs.map((r) => runHtml({ ...r, text: caps ? r.text.toUpperCase() : r.text })).join('') + (l.contd ? ' ' + spContdWord(book && book.language) : '');
 }
 async function spPdfHtml() {
   // (an empty line that starts a page passes its page on to the next one)
@@ -1508,6 +1577,7 @@ async function spPdfHtml() {
     return p;
   });
   await document.fonts.load('1em "Courier Prime"').catch(() => {});
+  if (bookDirection() === 'rtl') await document.fonts.load('1em "NEO Hebrew Mono"', 'א').catch(() => {});
   const counts = spMeasure(ps, false);
   const pg = spPaginate(lines.map((l, i) => ({ type: l.type, lines: counts[i], newPage: l.newPage })));
   const pages = [];
@@ -1529,7 +1599,10 @@ async function spPdfHtml() {
   const esc = (s) => escHtml(String(s || ''));
   const title = book.title && !isUntitled(book.title) ? book.title : t('Untitled');
   const credit = book.credit === undefined ? t('Written by') : book.credit;
-  const fonts = await spFontFaces();
+  // Hebrew prints in Courier New's Hebrew, at Courier Prime's pitch, as on
+  // the screen (styles.css); only where the script has Hebrew in it
+  const hebrew = bookDirection() === 'rtl' || SP_HEBREW_RE.test(book.title || '') || lines.some((l) => SP_HEBREW_RE.test(l.text));
+  const fonts = (await spFontFaces()) + (hebrew ? SP_HEBREW_MONO_FACES : '');
   const lines2 = (s) => esc(s).replace(/\n/g, '<br>');
   const titlePage = `<div class="page title">
     <div class="tp-main"><div class="tp-t${['b', 'u', 'i'].filter((k) => (book.titleStyle || {})[k]).map((k) => ' tp-' + k).join('')}">${esc(title.toUpperCase())}</div>${credit ? `<div class="gap">${esc(credit)}</div>` : ''}<div class="${credit ? '' : 'gap'}">${esc(book.author || '')}</div></div>
@@ -1537,11 +1610,15 @@ async function spPdfHtml() {
     <div class="tp-draft">${lines2(book.draft || '')}</div>
   </div>`;
   const body = pages.map((rows, k) => `<div class="page"><div class="num">${spPageLabel(k + 1)}</div><div class="room">${(rows || []).join('')}</div></div>`).join('');
-  return `<!DOCTYPE html><html lang="${escHtml(writingLanguage())}"><head><meta charset="utf-8"><title>${esc(title)}</title><style>
+  // a right-to-left script prints mirrored, as its page shows it: the binding
+  // margin and the indents on the right, transitions and the page number on
+  // the left. An English script's page is as it was.
+  const rtl = bookDirection() === 'rtl';
+  return `<!DOCTYPE html><html lang="${escHtml(writingLanguage())}"${rtl ? ' dir="rtl"' : ''}><head><meta charset="utf-8"><title>${esc(title)}</title><style>
 ${fonts}
 @page { size: 8.5in 11in; margin: 0; }
 html, body { margin: 0; padding: 0; background: #fff; }
-body { font-family: 'Courier Prime', 'Courier New', Courier, monospace; font-size: 12pt; line-height: 12pt; color: #000; }
+body { font-family: ${hebrew ? "'NEO Hebrew Mono', " : ''}'Courier Prime', 'Courier New', Courier, monospace; font-size: 12pt; line-height: 12pt; color: #000; }
 .page { width: 8.5in; height: 11in; box-sizing: border-box; padding: 1in 1in 0 1.5in; position: relative; overflow: hidden; break-after: page; }
 .page:last-child { break-after: auto; }
 .num { position: absolute; top: 0.5in; right: 1in; }
@@ -1560,8 +1637,25 @@ ${spUnderlineOn() ? 'p.sp-heading { text-decoration: underline; }' : ''}
 .tp-main div + div:not(.gap) { margin-top: 1em; }
 .tp-contact { position: absolute; left: 1.5in; bottom: 1in; width: 3.5in; text-align: left; }
 .tp-draft { position: absolute; right: 1in; bottom: 1in; width: 2.5in; text-align: right; }
-</style></head><body>${titlePage}${body}</body></html>`;
+${rtl ? SP_PDF_RTL_CSS : ''}</style></head><body>${titlePage}${body}</body></html>`;
 }
+// the PDF's page mirrored, for a right-to-left script (styles.css mirrors the screen's)
+const SP_PDF_RTL_CSS = `.page { padding: 1in 1.5in 0 1in; }
+.num { right: auto; left: 1in; }
+p.sp-character { margin-left: 0; margin-right: 13.2em; }
+p.sp-paren { margin-left: 0; margin-right: 9.6em; }
+p.sp-dialogue { margin-left: 0; margin-right: 6em; }
+p.sp-transition { text-align: left; }
+.tp-main { left: 1in; }
+.tp-contact { left: auto; right: 1.5in; text-align: right; }
+.tp-draft { right: auto; left: 1in; text-align: left; }
+`;
+// the Hebrew companion of styles.css's script face, for the PDF's page (the
+// print window is on this computer, so local() finds the same Courier New)
+const SP_HEBREW_RE = /[\u0590-\u05FF\uFB1D-\uFB4F]/;
+const SP_HEBREW_MONO_FACES = [['400', 'normal', "local('Courier New'), local('CourierNewPSMT')"], ['400', 'italic', "local('Courier New Italic'), local('CourierNewPS-ItalicMT')"],
+  ['700', 'normal', "local('Courier New Bold'), local('CourierNewPS-BoldMT')"], ['700', 'italic', "local('Courier New Bold Italic'), local('CourierNewPS-BoldItalicMT')"]]
+  .map(([w, st, src]) => `@font-face { font-family: 'NEO Hebrew Mono'; src: ${src}; font-weight: ${w}; font-style: ${st}; unicode-range: U+0590-05FF, U+FB1D-FB4F; }\n`).join('');
 // Courier Prime travels inside the PDF
 async function spFontFaces() {
   return embedFontFaces((name) => name === 'Courier Prime');
@@ -1637,6 +1731,7 @@ async function createScriptOnShelf(shelf) {
   const meta = await window.neo.createBook({ author: displayAuthor() });
   const chId = 'ch-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 6);
   await window.neo.writeChapter(meta.id, chId, '<p><br></p>');
+  newBookLanguage(meta); // in a right-to-left interface, a script in its language, mirrored
   meta.format = 'screenplay';
   meta.chapterOrder = [chId];
   meta.credit = t('Written by');

@@ -36,6 +36,9 @@ function parasFromHtml(html, { blanks = false } = {}) {
     const poetry = !litrpg && p.classList.contains('poetry');
     const flush = !poetry && !litrpg && p.classList.contains('flush');
     const align = litrpg ? '' : (p.style && p.style.textAlign) || '';
+    // only the stored exception (D2): a paragraph whose direction differs from the book's
+    const dirAttr = String(p.getAttribute('dir') || '').toLowerCase();
+    const dir = dirAttr === 'rtl' || dirAttr === 'ltr' ? dirAttr : '';
     const runs = paraRuns(p.innerHTML, !litrpg).filter((r) => r.text || r.fn !== undefined);
     const inner = runs.map((r) => runHtml(litrpg && r.text ? { ...r, text: litrpgSpaces(r.text) } : r)).join('');
     p.querySelectorAll('.fn').forEach((f) => f.remove());
@@ -48,7 +51,8 @@ function parasFromHtml(html, { blanks = false } = {}) {
       text: litrpg ? p.textContent.replace(/\s+$/, '') : p.innerText.trim(),
       runs,
       align,
-      html: `<p${litrpg ? ' class="litrpg"' : poetry ? ' class="poetry"' : flush ? ' class="flush"' : ''}${align ? ` style="text-align:${align}"` : ''}>${inner}</p>`
+      dir,
+      html: `<p${litrpg ? ' class="litrpg"' : poetry ? ' class="poetry"' : flush ? ' class="flush"' : ''}${dir ? ` dir="${dir}"` : ''}${align ? ` style="text-align:${align}"` : ''}>${inner}</p>`
     };
   });
   // an empty line inside a box is a blank line in it; at a box's edge, or
@@ -127,6 +131,12 @@ function exportChapters() {
 
 // The open book, packaged for the builders. Every builder takes an optional
 // data object in this shape, good for anthologies.
+// The language a file declares: the book's own. A right-to-left book that
+// names none is Hebrew writing (hebrewWriting()), never the interface's English.
+function exportLanguage() {
+  const l = writingLanguage();
+  return book && !book.language && bookDirection() === 'rtl' && !NeoBidi.isRtlLang(l) ? 'he' : l;
+}
 function bookExportData() {
   // an EPUB wants a real UUID as its identifier; the book gets one the first
   // time it's exported and keeps it, so re-exports are the same book
@@ -141,7 +151,8 @@ function bookExportData() {
     title: book.title,
     subtitle: book.subtitle,
     author: book.author || t('Anonymous'), // the screen says so; the files should too
-    language: writingLanguage(),
+    language: exportLanguage(),
+    dir: bookDirection(),
     coverSeed: book.coverSeed,
     coverImage: book.coverImage || null,
     sections,
@@ -170,14 +181,14 @@ function manuscriptSections() {
   const { sections } = exportChapters();
   return sections.filter((s) => s.kind === 'chapter' || s.kind === 'part' || s.kind === 'epigraph').map((s) => ({
     kind: s.kind, heading: s.heading || '', partTitle: s.partTitle || '',
-    paras: s.paras.map((p) => ({ sceneBreak: p.sceneBreak, blank: !!p.blank, poetry: p.poetry, flush: p.flush, litrpg: !!p.litrpg, align: p.align, runs: p.runs || [] })),
+    paras: s.paras.map((p) => ({ sceneBreak: p.sceneBreak, blank: !!p.blank, poetry: p.poetry, flush: p.flush, litrpg: !!p.litrpg, align: p.align, dir: p.dir, runs: p.runs || [] })),
     words: s.paras.reduce((n, p) => n + (p.sceneBreak ? 0 : countWords(p.text || '')), 0)
   }));
 }
 // the name on the book, as NEO knows it ("Anonymous", the screen's stand-in
 // for no name, is no byline)
 function manuscriptByline() {
-  const real = (x) => (x && String(x).trim() !== t('Anonymous') ? String(x).trim() : '');
+  const real = (x) => (x && !['Anonymous', t('Anonymous'), tBook('Anonymous')].includes(String(x).trim()) ? String(x).trim() : '');
   return real(book.author) || real(library.authorName) || '';
 }
 // what the dialog starts with, from what was kept
@@ -193,7 +204,7 @@ function manuscriptDefaults() {
     end: lib.end !== false,
     byline,
     headerName: mine.headerName || NeoManuscript.surnameOf(byline),
-    headerTitle: mine.headerTitle || String(book.title || t('Untitled')).toLocaleUpperCase(writingLanguage())
+    headerTitle: mine.headerTitle || String(book.title || tBook('Untitled')).toLocaleUpperCase(writingLanguage())
   };
 }
 function manuscriptModel(v, sections) {
@@ -201,12 +212,12 @@ function manuscriptModel(v, sections) {
   const shown = NeoManuscript.roundWords(words);
   const chapters = sections.filter((s) => s.kind === 'chapter');
   return {
-    title: book.title || t('Untitled'), byline: v.byline, headerName: v.headerName, headerTitle: v.headerTitle,
+    title: book.title || tBook('Untitled'), byline: v.byline, headerName: v.headerName, headerTitle: v.headerTitle,
     contact: { name: v.name, lines: [...String(v.address || '').split(/\r?\n/), v.phone, v.email] },
-    wordsText: t('about {n} words', { n: shown.toLocaleString(NeoI18n.getLocale()) }),
-    byText: v.byline ? t('by {name}', { name: v.byline }) : '',
-    endText: v.end ? t('END') : '',
-    font: v.font, paper: window.neo.paper || 'Letter', lang: writingLanguage(),
+    wordsText: plain(tBook('about {n} words', { n: shown })),
+    byText: v.byline ? plain(tBook('by {name}', { name: v.byline })) : '',
+    endText: v.end ? tBook('END') : '',
+    font: v.font, paper: window.neo.paper || 'Letter', lang: exportLanguage(), dir: bookDirection(),
     // one story with no chapters: the short-story layout
     short: sections.length === 1 && chapters.length === 1 && !chapters[0].heading,
     sections, words
@@ -215,9 +226,11 @@ function manuscriptModel(v, sections) {
 // Courier Prime (NEO's own Courier, bundled) goes into the PDF; Times New
 // Roman is the computer's own. A story with LitRPG boxes carries Courier
 // Prime for them either way.
-async function manuscriptFontFaces(font, boxes) {
-  if (font !== 'courier' && !boxes) return '';
-  return embedFontFaces((name) => name === 'Courier Prime');
+async function manuscriptFontFaces(font, dir, boxes) {
+  if (font !== 'courier' && dir !== 'rtl' && !boxes) return '';
+  const families = new Set(font === 'courier' || boxes ? ['Courier Prime'] : []);
+  if (dir === 'rtl') families.add(font === 'courier' ? 'NEO Hebrew Mono' : 'NEO Hebrew Serif');
+  return embedFontFaces((name) => families.has(name));
 }
 
 // The dialog: the contact block, the byline and header, the font, END, and
@@ -228,7 +241,7 @@ function manuscriptDialog(v, words) {
     bd.className = 'modal-backdrop';
     bd.id = 'manuscript-dialog';
     // (the values go in from code: a quotation mark in a title can't cut one short)
-    const field = (k, label, ph = '', type = 'text') => `<label>${escHtml(label)}<input data-k="${k}" type="${type}" placeholder="${escAttr(ph)}" spellcheck="false" autocomplete="off"></label>`;
+    const field = (k, label, ph = '', type = 'text') => `<label>${escHtml(label)}<input data-k="${k}" type="${type}" dir="${type === 'text' ? 'auto' : 'ltr'}" placeholder="${escAttr(ph)}" spellcheck="false" autocomplete="off"></label>`;
     bd.innerHTML = `
       <div class="modal ms-modal" role="dialog" aria-modal="true" aria-labelledby="ms-title">
         <h2 id="ms-title">${escHtml(t('Manuscript Format'))}</h2>
@@ -252,7 +265,7 @@ function manuscriptDialog(v, words) {
             <label class="ms-inline"><input type="checkbox" data-k="end"${v.end ? ' checked' : ''}> ${escHtml(t('“END” after the last line'))}</label>
           </fieldset>
         </div>
-        <p class="ms-count">${escHtml(t('{shown} on the title page ({n} counted).', { shown: t('about {n} words', { n: NeoManuscript.roundWords(words).toLocaleString(NeoI18n.getLocale()) }), n: words.toLocaleString(NeoI18n.getLocale()) }))}</p>
+        <p class="ms-count">${escHtml(t('{shown} on the title page ({n} counted).', { shown: tBook('about {n} words', { n: NeoManuscript.roundWords(words) }), n: words.toLocaleString(NeoI18n.getLocale()) }))}</p>
         <div class="ms-actions">
           <button class="m-cancel btn-quiet">${escHtml(t('Cancel'))}</button>
           <button class="btn-quiet ms-docx">${escHtml(t('Save as Word (.docx)'))}</button>
@@ -266,7 +279,7 @@ function manuscriptDialog(v, words) {
       out.font = (bd.querySelector('input[name="ms-font"]:checked') || {}).value || 'times';
       return out;
     };
-    const eg = () => { bd.querySelector('.ms-header-eg').textContent = t('At the top right: {header}', { header: NeoManuscript.headerText(read()) + '1' }); };
+    const eg = () => { bd.querySelector('.ms-header-eg').textContent = bookDirection() === 'rtl' ? t('At the top left: {header}', { header: NeoManuscript.headerText(read()) + '1' }) : t('At the top right: {header}', { header: NeoManuscript.headerText(read()) + '1' }); };
     // the header's name follows the byline until it's been changed by hand
     let nameTouched = v.headerName !== NeoManuscript.surnameOf(v.byline);
     bd.querySelector('[data-k="headerName"]').addEventListener('input', () => { nameTouched = true; });
@@ -294,7 +307,7 @@ async function manuscriptKeep(v) {
   const mine = {};
   if (v.byline && v.byline !== manuscriptByline()) mine.byline = v.byline;
   if (v.headerName && v.headerName !== NeoManuscript.surnameOf(v.byline)) mine.headerName = v.headerName;
-  if (v.headerTitle && v.headerTitle !== String(book.title || t('Untitled')).toLocaleUpperCase(writingLanguage())) mine.headerTitle = v.headerTitle;
+  if (v.headerTitle && v.headerTitle !== String(book.title || tBook('Untitled')).toLocaleUpperCase(writingLanguage())) mine.headerTitle = v.headerTitle;
   const before = JSON.stringify(book.manuscript || {});
   if (Object.keys(mine).length) book.manuscript = mine; else delete book.manuscript;
   if (JSON.stringify(book.manuscript || {}) !== before) await saveMeta();
@@ -330,7 +343,7 @@ async function manuscriptRun(sections) {
       saved = await window.neo.exportSave({ format: 'docx', defaultName, zipEntries: NeoManuscript.docxEntries(m) });
     } else {
       toast(t('Setting the pages…'));
-      const res = await window.neo.printManuscript({ html: NeoManuscript.html(m, { fontFaces: await manuscriptFontFaces(m.font, (m.sections || []).some((sec) => (sec.paras || []).some((x) => x.litrpg))) }), paper: m.paper, defaultName });
+      const res = await window.neo.printManuscript({ html: NeoManuscript.html(m, { fontFaces: await manuscriptFontFaces(m.font, m.dir, (m.sections || []).some((sec) => (sec.paras || []).some((x) => x.litrpg))) }), paper: m.paper, defaultName });
       saved = res && res.file;
       if (saved) toast(t('Exported: {file} ({pages} pages)', { file: saved.split(/[\\/]/).pop(), pages: res.pages }), 6000);
       return;

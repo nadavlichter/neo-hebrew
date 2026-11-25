@@ -155,6 +155,10 @@ function captureStructure(label, opts) {
     sectionNotes: JSON.parse(JSON.stringify(book.sectionNotes || {})),
     looseCards: JSON.parse(JSON.stringify(book.looseCards || [])),
     sceneNotes: { ...(book.sceneNotes || {}) },
+    // only an action that changes the book's direction takes it along; ⌘Z of
+    // anything else leaves the direction as it is now (the first letter of a
+    // new book sets it without an undo step)
+    bookDir: opts && opts.bookDir ? { direction: book.direction, language: book.language } : null,
     darlings: JSON.parse(JSON.stringify(darlings)),
     stickies: JSON.parse(JSON.stringify(stickies))
   };
@@ -174,7 +178,7 @@ async function structuralUndo(fromRedo) {
   const snap = undoStack.pop();
   if (!snap || !book) return;
   sealUndo(snap); // nothing typed since: the state now is the action's own
-  const forward = captureStructure(fromRedo ? 'undo of a redo' : 'redo'); // the state this undo leaves, for Redo
+  const forward = captureStructure(fromRedo ? 'undo of a redo' : 'redo', snap.bookDir ? { bookDir: true } : undefined); // the state this undo leaves, for Redo
   const after = snap.after;
   // Chapter by chapter: one the action changed and nothing touched since
   // goes back; one only typed in since keeps its words; one both changed
@@ -222,6 +226,10 @@ async function structuralUndo(fromRedo) {
   book.sectionNotes = snap.sectionNotes;
   book.looseCards = snap.looseCards || [];
   book.sceneNotes = snap.sceneNotes || {};
+  if (snap.bookDir) {
+    for (const k of ['direction', 'language']) { if (snap.bookDir[k] === undefined) delete book[k]; else book[k] = snap.bookDir[k]; }
+    applyBookDir();
+  }
   // lists likewise: what the action changed goes back, anything added or
   // removed since stays that way (the displaced text above included)
   darlings = mergeSidecar(after.darlings, snap.darlings, darlings, true);
@@ -319,7 +327,7 @@ function rejoinAtCaret() {
 // lands over writing made after the undo.
 document.addEventListener('input', () => { redoStack = []; }, true);
 document.addEventListener('keydown', (e) => {
-  const key = e.key.toLowerCase();
+  const key = latinKey(e).toLowerCase();
   const redo = (e.metaKey || e.ctrlKey) && ((e.shiftKey && key === 'z') || (e.ctrlKey && !e.metaKey && !e.shiftKey && key === 'y' && !IS_MAC));
   if (!redo || $('#editor-view').hidden || !book || !redoStack.length) return;
   e.preventDefault();
@@ -327,7 +335,7 @@ document.addEventListener('keydown', (e) => {
 }, true);
 
 document.addEventListener('keydown', (e) => {
-  if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.key.toLowerCase() !== 'z') return;
+  if (!(e.metaKey || e.ctrlKey) || e.shiftKey || latinKey(e).toLowerCase() !== 'z') return;
   if ($('#editor-view').hidden || !book || !undoStack.length) return;
   const ae = document.activeElement;
   // inside text, ⌘Z belongs to typing; outside it, it belongs to structure
@@ -350,7 +358,7 @@ let readGen = 0;
 
 function readVoice() {
   const voices = window.speechSynthesis.getVoices();
-  const lang = writingLanguage().toLowerCase();
+  const lang = exportLanguage().toLowerCase(); // a right-to-left book with no language is read as Hebrew
   const base = lang.split('-')[0];
   const by = (f) => voices.find(f);
   return by((v) => v.lang.toLowerCase().replace('_', '-') === lang && v.default) ||
@@ -400,7 +408,7 @@ function readSentences(p, from) {
   const text = p.textContent;
   const spans = [];
   if (window.Intl && Intl.Segmenter) {
-    const seg = new Intl.Segmenter(writingLanguage(), { granularity: 'sentence' });
+    const seg = new Intl.Segmenter(exportLanguage(), { granularity: 'sentence' });
     for (const s of seg.segment(text)) spans.push([s.index, s.index + s.segment.length]);
   } else spans.push([0, text.length]);
   return spans
@@ -458,7 +466,7 @@ async function toggleReadAloud() {
     if (done || !item.p.isConnected) { stopReadAloud(false); return; }
     reading.item = item;
     const u = new SpeechSynthesisUtterance(item.p.textContent.slice(item.a, item.b).trim());
-    if (voice) { u.voice = voice; u.lang = voice.lang; } else u.lang = writingLanguage();
+    if (voice) { u.voice = voice; u.lang = voice.lang; } else u.lang = exportLanguage();
     u.onstart = () => {
       if (!reading || reading.gen !== gen) return;
       const r = readRange(item.p, item.a, item.b);

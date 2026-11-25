@@ -61,3 +61,21 @@ test('another device\'s days: the larger tally of a day wins', () => {
   assert.deepEqual(plain(mergeDayCounts(ours, null)), plain(ours));
   assert.deepEqual(plain(mergeDayCounts(undefined, { d: { start: 'a', end: 1 } })), {});
 });
+
+// Exercise the actual word scanner together with daily accounting: reading
+// a pointed/marked spelling from disk must not become writing for today.
+const wordContext = vm.createContext({ Intl });
+wordContext.window = wordContext;
+vm.runInContext(app.slice(app.indexOf('const SEGMENTED_SCRIPTS'), app.indexOf('// A copy of a chapter without the marks')), wordContext);
+const countWords = wordContext.countWords;
+
+test('Hebrew daily words count maqaf, niqqud and writer-owned bidi marks', () => {
+  const start = countWords('בֵּית־סֵפֶר שָׁלוֹם צה״ל');
+  assert.equal(start, 3);
+  let day = nextDayCount(undefined, start, undefined);
+  const marked = countWords('בֵּית־סֵפֶר שָׁלוֹם צה״ל\u200e עולם\u200f');
+  day = nextDayCount(day, marked, start);
+  assert.equal(dayWords(day), 1);
+  const synced = countWords('בֵּית־סֵפֶר של\u200eום צה״ל עולם עוד מילים');
+  assert.equal(dayWords(nextDayCount(day, synced, synced)), 1, 'sync changes the baseline, not the typed tally');
+});

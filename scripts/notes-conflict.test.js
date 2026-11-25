@@ -39,6 +39,9 @@ function harness() {
     book: { id: 'b1' },
     window: { neo },
     console,
+    // the page's notes keep a paragraph's dir only where it differs from the book's
+    savedParaDir: (tag) => tag,
+    bookDirection: () => 'ltr',
   });
   const api = vm.runInContext(
     `let auxDirty = false;\n${block}\n({ flushAux, refreshOpenAux, auxPending, auxBase, auxSeq, setDirty(v) { auxDirty = v; } })`,

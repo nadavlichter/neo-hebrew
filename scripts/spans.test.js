@@ -6,7 +6,7 @@ const { test } = require('node:test');
 
 // what a chapter's page saves (captureBody), run on its own
 const app = require('./app-files').appSource();
-const context = vm.createContext({});
+const context = vm.createContext({ bookDirection: () => 'ltr' });
 vm.runInContext(app.slice(app.indexOf('function captureBody('), app.indexOf('// A chapter that opens on a line of dialogue')), context);
 vm.runInContext('this.api = { captureBody, dropJunkSpans };', context);
 const { captureBody, dropJunkSpans } = context.api;

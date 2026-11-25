@@ -5,6 +5,62 @@
 /* ================================================================== */
 
 let openGeneration = 0;
+// The book's direction: always 'ltr' until a book says otherwise. The
+// interface may run right to left (<html dir>), but the writer's page keeps
+// the book's own direction, so the containers that hold writer text carry it
+// as a screen attribute. Never on a paragraph inside a .chapter-body, and the
+// containers sit outside what captureBody saves, so nothing reaches a file.
+function bookDirection() { return NeoBidi.bookDir(book); }
+// the interface's direction, which the chrome follows (the page follows the book's)
+const uiRtl = () => document.documentElement.dir === 'rtl';
+// Writer text shown in the chrome (a chapter's title in the nav, a number
+// beside it) is an isolate that takes its own direction from its first letter
+// (<bdi> is dir=auto), so an English title in a Hebrew interface, or a title
+// that starts with a digit, can't pull its neighbours around. Only the screen.
+// Plain text where nothing can go wrong (left to right interface, no right-to-left
+// letters), so an English interface's glyph runs stay exactly as they were.
+const needsIsolate = (text) => uiRtl() || NeoBidi.dirCounts(text).rtl > 0;
+function isolated(text) { const b = document.createElement('bdi'); b.textContent = text; return b; }
+function setIsolated(el, text) { if (needsIsolate(text)) el.replaceChildren(isolated(text)); else el.textContent = text; }
+function markedLabel(el, mark, title) {
+  if (needsIsolate(title)) el.replaceChildren(isolated(mark), ' · ', isolated(title));
+  else el.textContent = `${mark} · ${title}`;
+}
+// ← → in the interface move along it: in a right-to-left one ← is "next"
+const nextKey = () => (uiRtl() ? 'ArrowLeft' : 'ArrowRight');
+const BOOK_DIR_BOXES = ['#paper', '#aux-paper', '#sticky-list', '#side-cards', '#loose-list'];
+// dir and lang on a box that holds writer text; lang only when the book has
+// one, so an English book's page carries no attribute it didn't before.
+function setBookBox(el) {
+  el.dir = bookDirection();
+  if (book && typeof book.language === 'string' && book.language) el.lang = book.language;
+  else el.removeAttribute('lang');
+}
+// Safe to call again whenever the book's direction or language changes.
+function applyBookDir() {
+  for (const sel of BOOK_DIR_BOXES) { const el = document.querySelector(sel); if (el) setBookBox(el); }
+  if (library) syncDropCap();
+  if (book) refreshBookWords();
+  reportViewState(); // the Format menu's ticks, and whether the direction items show in simple NEO
+}
+// plain text of a chapter's HTML, for judging its direction (letters only matter)
+function htmlLetters(html) {
+  return String(html || '').replace(/<[^>]*>/g, ' ')
+    .replace(/&#(\d+);/g, (m, n) => String.fromCodePoint(+n))
+    .replace(/&#x([0-9a-f]+);/gi, (m, n) => String.fromCodePoint(parseInt(n, 16)))
+    .replace(/&[a-z]+;/gi, ' ');
+}
+// The direction a book with none is given on opening, or null. A book whose
+// paragraphs already say they run right to left was written with directions
+// known (in a left-to-right book, firstLetterDir marks each Hebrew paragraph
+// and leaves the English ones bare), so it is left as it is: setting it right
+// to left would turn those bare English paragraphs around.
+function openingDirection(meta, html) {
+  const bodies = Object.values(html || {}).map((h) => String(h || ''));
+  if (bodies.some((h) => /<p\b[^>]*\sdir="rtl"/.test(h))) return null;
+  return NeoBidi.inferRtlBook(meta, bodies.map(htmlLetters).join(' '));
+}
+
 async function openBook(bookId) {
   // a book being exported from the shelf finishes first (it borrows the
   // open book's place for the moment it takes)
@@ -22,9 +78,12 @@ async function openBook(bookId) {
   }
   const sideStickies = await window.neo.readJSON(bookId, 'stickies', []);
   const sideDarlings = await window.neo.readJSON(bookId, 'darlings', []);
+  const words = await bookWordsFor(meta);
   if (gen !== openGeneration) return;
+  bookWords = words;
   tabPlaces = {}; // a fresh book starts with fresh places
   book = meta;
+  applyBookDir();
   showWindowTitle();
   forgetSnapshots();
   forgetSpelling();
@@ -36,6 +95,11 @@ async function openBook(bookId) {
   for (const chId of Object.keys(html)) knowDisk(bookId, chId, html[chId]);
   diskStamps = {};
   savedMetaSig = metaSig(book); // what disk holds; NEO's own defaults don't count as edits
+  // a book with no direction whose text is mostly right to left (book.json
+  // rebuilt from the chapters) is set so once; this is a change to book.json
+  // only, never to a chapter, and never 'ltr'
+  const inferred = openingDirection(book, html);
+  if (inferred) { Object.assign(book, inferred); applyBookDir(); scheduleMetaSave(); }
   knownChapters = new Set(book.chapterOrder);
   savedOrder = [...book.chapterOrder];
   stickies = sideStickies;
@@ -136,6 +200,7 @@ function renderChapters() {
       const titleSpan = document.createElement('span');
       titleSpan.className = 'ch-title';
       titleSpan.contentEditable = 'true';
+      titleSpan.dir = 'auto';
       titleSpan.spellcheck = false;
       titleSpan.textContent = book.chapterTitles[chId] || '';
       if (titleSpan.textContent) head.classList.add('has-title');
@@ -241,6 +306,8 @@ function renderChapters() {
     // Courier Prime has arrived, in case the first count was in another face
     spRepaginate();
     if (document.fonts) document.fonts.load('1em "Courier Prime"').then(() => spSchedule(0)).catch(() => {});
+    // a Hebrew script's letters come from Courier New (styles.css, NEO Hebrew Mono)
+    if (document.fonts && bookDirection() === 'rtl') document.fonts.load('1em "NEO Hebrew Mono"', 'א').then(() => spSchedule(0)).catch(() => {});
   }
   applyPaged();
   renderAllFootnoteLists();
@@ -347,6 +414,6 @@ async function chapterMenu(chId, x = 0, y = 0, from = null) {
 // Copyright © 2026 Hugh Howey / All rights reserved.
 function copyrightStarter() {
   const name = (book && book.author) || library.authorName || t('Anonymous');
-  return `<p>${escHtml(t('Copyright © {year} {name}', { year: String(new Date().getFullYear()), name }))}</p>`
+  return `<p>${escHtml(plain(t('Copyright © {year} {name}', { year: String(new Date().getFullYear()), name })))}</p>`
     + `<p>${escHtml(t('All rights reserved.'))}</p>`;
 }

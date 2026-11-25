@@ -5,9 +5,9 @@
 /* ================================================================== */
 
 const DROPCAP_FONTS = {
-  literary: '"Didot", "Bodoni 72", Georgia, serif',
-  fantasy: '"Apple Chancery", "Snell Roundhand", cursive',
-  scifi: 'Futura, "Avenir Next", "Helvetica Neue", sans-serif'
+  literary: '"NEO Hebrew Serif", "Didot", "Bodoni 72", Georgia, serif',
+  fantasy: '"NEO Hebrew Fantasy", "Apple Chancery", "Snell Roundhand", cursive',
+  scifi: '"NEO Hebrew Sans", Futura, "Avenir Next", "Helvetica Neue", sans-serif'
 };
 const BODY_FONTS = {
   'Georgia': 'Georgia, "Times New Roman", serif',
@@ -30,6 +30,16 @@ const BODY_FONT_CHOICES = IS_MAC
   ? ['Georgia', 'Palatino', 'Baskerville', 'Hoefler Text', 'Iowan Old Style', 'Jost', 'iA Writer Quattro']
   : ['Georgia', 'Palatino', 'Baskerville', 'Cambria', 'Constantia', 'Jost', 'iA Writer Quattro'];
 
+// A right-to-left book starts with no drop cap
+// unless the writer picked a style (library.fonts.dropcapChosen; nothing is written to the
+// book). dropCapStyle is what the Drop Cap menu ticks and the page shows.
+function dropCapStyle(dir = book ? bookDirection() : 'ltr') {
+  const f = (library && library.fonts) || {};
+  if (f.dropcap === 'none') return 'none';
+  if (dir === 'rtl' && !f.dropcapChosen) return 'none';
+  return f.dropcap || 'literary';
+}
+function syncDropCap() { document.body.classList.toggle('no-dropcap', dropCapStyle() === 'none'); }
 function applyFonts() {
   const f = library.fonts || {};
   if (f.body && typeof f.body === 'string') {
@@ -38,7 +48,7 @@ function applyFonts() {
   if (f.dropcap && DROPCAP_FONTS[f.dropcap]) {
     document.documentElement.style.setProperty('--dropcap-font', DROPCAP_FONTS[f.dropcap]);
   }
-  document.body.classList.toggle('no-dropcap', f.dropcap === 'none');
+  syncDropCap();
   refreshDropCaps(true);
   document.body.classList.toggle('night', library.pageTheme === 'night');
   // Light: the paper page in a light room, the whole app with it
@@ -60,7 +70,13 @@ function applyFonts() {
 // A built-in choice, or a font the writer picked from their own computer.
 // A library opened where that font is missing simply reads in Georgia.
 function bodyFontStack(name) {
-  return Object.hasOwn(BODY_FONTS, name) ? BODY_FONTS[name] : `"${name.replace(/["\\]/g, '')}", Georgia, serif`;
+  if (Object.hasOwn(BODY_FONTS, name)) {
+    const stack = BODY_FONTS[name];
+    // A separate Hebrew-only family leaves installed Latin faces intact,
+    // and can synthesize Hebrew italic even when the Latin family has its own.
+    return `"NEO Hebrew ${/sans-serif/.test(stack) ? 'Sans' : 'Serif'}", ${stack}`;
+  }
+  return `"${name.replace(/["\\]/g, '')}", "NEO Hebrew Serif", Georgia, serif`;
 }
 
 // Format → Body Font → Other Font…: every font installed on this computer,
@@ -86,7 +102,7 @@ async function pickLocalFont() {
         <p class="font-now" style="font-size:13px;color:var(--muted);margin-bottom:10px"></p>
         <input type="text" spellcheck="false" placeholder="${t('Search {n} installed fonts', { n: families.length })}" />
         <div class="font-list"></div>
-        <div style="text-align:right;margin-top:14px">
+        <div style="text-align:end;margin-top:14px">
           <button class="m-cancel btn-quiet">${t('Cancel')}</button>
         </div>
       </div>`;
@@ -238,12 +254,114 @@ function applyAlign(value) {
     (p) => r.intersectsNode(p) && !p.classList.contains('scene-break')
   );
   for (const p of ps) {
-    if (value === 'left') p.style.removeProperty('text-align');
-    else p.style.textAlign = value;
+    // the start side is the default and is stored as nothing (D3)
+    const css = NeoBidi.alignStyleFor(value, paraDirOf(p));
+    if (!css) p.style.removeProperty('text-align');
+    else p.style.textAlign = css;
     if (!p.getAttribute('style')) p.removeAttribute('style');
   }
   syncChapter(body, chId);
   reportViewState(); // the Format menu's alignment tick
+}
+
+// The direction the Format menu should tick for the caret's paragraph (its own
+// dir, else the book's); null outside the manuscript.
+function currentParaDir() {
+  if (!book || currentTab !== 'manuscript' || isScript()) return null;
+  const sel = window.getSelection();
+  if (!sel || !sel.rangeCount) return null;
+  let el = sel.getRangeAt(0).startContainer;
+  if (el.nodeType === Node.TEXT_NODE) el = el.parentElement;
+  const body = el && el.closest ? el.closest('.chapter-body') : null;
+  const p = el && el.closest ? el.closest('p') : null;
+  if (!body || !p || !body.contains(p)) return null;
+  return paraDirOf(p);
+}
+
+// Format → Paragraph Direction: every paragraph the selection touches. Like
+// alignment it is an edit of the paragraphs themselves (the engine's undo does
+// not see it), saved through syncChapter; the dir is kept only where it
+// differs from the book's (D2).
+function applyParaDir(value) {
+  if (value !== 'rtl' && value !== 'ltr') return;
+  if (!book || currentTab !== 'manuscript' || isScript()) { toast(t('Click into a paragraph first')); return; }
+  const sel = window.getSelection();
+  if (!sel.rangeCount) return;
+  const r = sel.getRangeAt(0);
+  let el = r.startContainer;
+  if (el.nodeType === Node.TEXT_NODE) el = el.parentElement;
+  const body = el && el.closest ? el.closest('.chapter-body') : null;
+  if (!body) { toast(t('Click into a paragraph first')); return; }
+  const chId = body.closest('.chapter').dataset.id;
+  const attr = NeoBidi.paraDirAttr(value, bookDirection());
+  for (const p of body.querySelectorAll('p')) {
+    if (!r.intersectsNode(p) || p.classList.contains('scene-break')) continue;
+    if (attr) p.setAttribute('dir', attr); else p.removeAttribute('dir');
+  }
+  syncChapter(body, chId);
+  reportViewState();
+}
+
+// Format → Book Direction: the book's default flips. Paragraphs without a dir
+// follow it; those whose dir now equals it lose theirs. A chapter is written
+// only if its HTML changes. ⌘Z puts the direction and the chapters back.
+function setBookDirection(value) {
+  if (value !== 'rtl' && value !== 'ltr') return;
+  if (!book || book.direction === value) return;
+  snapshotStructure('book direction', { bookDir: true });
+  book.direction = value; // an explicit 'ltr' too: it keeps a rebuilt book from being guessed
+  const lang = rtlInterfaceLanguage();
+  if (value === 'rtl' && !book.language && lang) book.language = lang;
+  for (const id of book.chapterOrder) {
+    const next = NeoBidi.dropParaDir(chapterHTML[id], value);
+    if (next === chapterHTML[id]) continue;
+    chapterHTML[id] = next;
+    wordCache[id] = null;
+    scheduleChapterSave(id);
+  }
+  for (const p of document.querySelectorAll(`#paper .chapter-body p[dir="${value}"]`)) p.removeAttribute('dir');
+  applyBookDir();
+  if (isScript()) spSchedule(0); // the page mirrored: count its lines again
+  scheduleMetaSave();
+}
+
+// ---- direction keys: ----
+// Windows and Linux (Word's): Ctrl+Right Shift is right to left, Ctrl+Left
+// Shift is left to right. A Shift key is no menu accelerator, so the window
+// reads it: the press counts when Ctrl is held through it and no other key
+// came between, and it acts on the key's release. The Mac has ⌃⌘→ and ⌃⌘← on
+// the menu items (the arrow points to the side the line starts from).
+function directionKeyTracker() {
+  let armed = '';
+  return (type, e) => {
+    const shift = e.code === 'ShiftRight' || e.code === 'ShiftLeft';
+    if (type === 'keydown') {
+      if (shift && e.ctrlKey && !e.altKey && !e.metaKey && !e.repeat && !armed) armed = e.code;
+      else if (!(shift && e.repeat)) armed = '';
+      return null;
+    }
+    if (!shift || e.code !== armed) { if (!shift) armed = ''; return null; }
+    const code = armed;
+    armed = '';
+    return e.ctrlKey ? (code === 'ShiftRight' ? 'rtl' : 'ltr') : null;
+  };
+}
+// ---- end of direction keys ----
+// The direction items are behind Show More Features, except for a writer
+// whose interface or open book runs right to left (D6).
+const dirItemsShown = () => featureOn('formatting') || uiRtl() || (!!book && bookDirection() === 'rtl');
+if (!IS_MAC && !IS_POCKET) {
+  const track = directionKeyTracker();
+  for (const type of ['keydown', 'keyup']) {
+    document.addEventListener(type, (e) => {
+      const dir = track(type, e);
+      if (!dir || !book || isScript() || !dirItemsShown()) return;
+      const a = document.activeElement;
+      if (!a || !a.closest || !a.closest('.chapter-body')) return;
+      e.preventDefault();
+      applyParaDir(dir);
+    }, true);
+  }
 }
 
 // Format → Align Book Prose: one structural undo, with special pages and
@@ -307,6 +425,10 @@ function shortcutSections() {
       ['→', tk('Take the gray suggestion')],
       [K('⌘1–⌘7', 'Ctrl+1–Ctrl+7'), tk('Scene heading, action, character, parenthetical, dialogue, transition, shot')],
       [['INT.', 'EXT.'], tk('At the start of a line: a scene heading')],
+      ...(spCaseless() ? [
+        [['פנים.', 'חוץ.'], tk('At the start of a line: a scene heading')],
+        [['@', '.', '>'], tk('At the start of a line, then Enter: a character, a scene heading, a transition'), tk('A name the script already has is a character on its own. Tab also changes what a line is.')]
+      ] : []),
       [KPH, tk('Insert a placeholder note')],
       [KDA, tk('Move selected text to Darlings')]
     ] };
@@ -339,6 +461,10 @@ function bookShortcutSections() {
         [K('⌘⇧R', 'Ctrl+Shift+R'), tk('Align paragraph right')],
         [K('⌘⇧J', 'Ctrl+Shift+J'), tk('Justify paragraph')]
       ] : []),
+      ...(dirItemsShown() && !(book && isScript()) ? [
+        [K('⌃⌘→', 'Ctrl+Right Shift'), tk('Paragraph runs right to left'), tk('A paragraph also takes the direction of its first letter. Format → Book Direction sets the whole book.')],
+        [K('⌃⌘←', 'Ctrl+Left Shift'), tk('Paragraph runs left to right')]
+      ] : []),
       [K('⌘+', 'Ctrl++'), tk('Larger text')],
       [K('⌘−', 'Ctrl+−'), tk('Smaller text')],
       [K('⌘0', 'Ctrl+0'), tk('Reset text size and page zoom')]
@@ -365,8 +491,9 @@ function bookShortcutSections() {
       ...(on('focus') ? [[K('⌘⇧O', 'Ctrl+Shift+O'), tk('Cycle focus mode'), tk('Off → paragraph → sentence → off.')]] : []),
       [IS_MAC ? '⌥⌘↓' : ['Ctrl+Alt+↓', 'Ctrl+Page Down'], tk('Go to the next chapter')],
       [IS_MAC ? '⌥⌘↑' : ['Ctrl+Alt+↑', 'Ctrl+Page Up'], tk('Go to the previous chapter')],
-      [K('⌥⌘→', 'Ctrl+Alt+→'), tk('Go to the next tab'), tk('Manuscript, Notes, Outline, Darlings, then round again.')],
-      [K('⌥⌘←', 'Ctrl+Alt+←'), tk('Go to the previous tab')],
+      // the tab row runs the way the interface does, so → is "next" only left to right
+      [K('⌥⌘' + (uiRtl() ? '←' : '→'), 'Ctrl+Alt+' + (uiRtl() ? '←' : '→')), tk('Go to the next tab'), tk('Manuscript, Notes, Outline, Darlings, then round again.')],
+      [K('⌥⌘' + (uiRtl() ? '→' : '←'), 'Ctrl+Alt+' + (uiRtl() ? '→' : '←')), tk('Go to the previous tab')],
       [['F6', K('⌃Tab', 'Ctrl+Tab')], tk('Move between the page, the chapters, the notes and the bottom bar'), tk('Add Shift to go back. Esc returns to the page. On the shelf: the books, then the header.')],
       ...(IS_MAC ? [
         ['⌘H', tk('Hide NEO')],
